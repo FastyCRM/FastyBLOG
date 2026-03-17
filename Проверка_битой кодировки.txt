@@ -1,0 +1,1 @@
+powershell -ExecutionPolicy Bypass -File scripts/check-encoding.ps1

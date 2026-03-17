@@ -1,0 +1,43 @@
+/* =========================================================
+   THEME: color
+   ROLE: Светлее black, но не студийный light
+   ========================================================= */
+
+:root[data-theme="color"]{
+  --page-bg-1: #162036;
+  --page-bg-2: #111A2C;
+  --page-glow-1: rgba(255, 160, 80, 0.22);
+  --page-glow-2: rgba(80, 180, 255, 0.18);
+
+  --text: rgba(255,255,255,0.94);
+  --text-muted: rgba(255,255,255,0.70);
+  --text-faint: rgba(255,255,255,0.50);
+
+  --surface: rgba(255,255,255,0.11);
+  --surface-2: rgba(255,255,255,0.15);
+  --surface-3: rgba(255,255,255,0.18);
+  --surface-solid: #1a2236;
+
+  --border: rgba(255,255,255,0.18);
+  --border-soft: rgba(255,255,255,0.12);
+
+  --shadow-1: 0 8px 24px rgba(0,0,0,0.32);
+  --shadow-2: 0 2px 8px rgba(0,0,0,0.22);
+
+  --accent: #FFA24C;
+  --accent-2: #4AC0FF;
+  --accent-ok: #45D6A6;
+  --accent-warn: #FFC04D;
+  --accent-bad: #FF5A5A;
+
+  --control-bg: #6a6d76;
+  --control-bg-hover: #3B4560;
+  --control-border: rgba(255,255,255,0.20);
+  --focus: rgba(74, 192, 255, 0.45);
+
+  --table-row: rgba(255,255,255,0.10);
+  --table-row-hover: rgba(255,255,255,0.14);
+
+  --radius: 10px;
+  --blur: 10px;
+}

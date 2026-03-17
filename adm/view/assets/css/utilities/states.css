@@ -1,0 +1,17 @@
+/*
+ * FILE: /adm/view/assets/css/utilities/states.css
+ * ROLE: UI states
+ * CONNECTIONS:
+ *  - none
+ */
+
+.is-disabled{ opacity:0.55; pointer-events:none; }
+
+/*
+ * MODAL LOCK
+ * Когда открыта глобальная модалка — фон не должен скроллиться (особенно на мобилках).
+ */
+body.is-modal-open{
+  overflow: hidden;
+  width: 100%;
+}

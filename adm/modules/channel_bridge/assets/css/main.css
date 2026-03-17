@@ -1,0 +1,47 @@
+/**
+ * FILE: /adm/modules/channel_bridge/assets/css/main.css
+ * ROLE: Локальные стили модуля channel_bridge.
+ */
+
+.cb-head__body {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cb-head__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.cb-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.cb-status {
+  display: grid;
+  gap: 8px;
+}
+
+.cb-code {
+  margin-top: 8px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+@media (max-width: 900px) {
+  .cb-grid {
+    grid-template-columns: 1fr;
+  }
+}
+

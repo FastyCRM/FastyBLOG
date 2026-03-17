@@ -1,0 +1,101 @@
+/*
+ * FILE: /adm/view/assets/css/base/layout.css
+ * ROLE: Page atmosphere + layout skeleton
+ * CONNECTIONS:
+ *  - uses --page-bg-*, --page-glow-* from theme
+ *  - uses --blur token from theme
+ */
+
+body{
+  background:
+    radial-gradient(720px 420px at 15% 10%, var(--page-glow-1), transparent 52%),
+    radial-gradient(720px 420px at 85% 15%, var(--page-glow-2), transparent 52%),
+    linear-gradient(180deg, var(--page-bg-1), var(--page-bg-2));
+}
+
+/* subtle "noise" without images */
+body::after{
+  content:"";
+  position:fixed;
+  inset:0;
+  pointer-events:none;
+
+  /* меньше грязи */
+  opacity:0.035;
+
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(255,255,255,0.045) 0 1px,
+    transparent 1px 3px
+  );
+
+  /* overlay = серое месиво под слоями */
+  mix-blend-mode: normal;
+}
+
+.app{
+  /*
+   * Полноэкранный каркас.
+   * Скролл должен жить в .main (контент), а не в body.
+   */
+  height: 100dvh;
+  min-height: 100vh;
+  display:flex;
+  overflow: hidden;
+}
+.shell{
+  /*
+   * Правая часть (topbar + main).
+   * Важно: фиксируем высоту, чтобы main мог скроллиться внутри.
+   */
+  flex:1 1 auto;
+  min-width:0;
+  height: 100dvh;
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+}
+
+/* MAIN must be transparent (no background) */
+.main{
+  /*
+   * Контентная зона.
+   * Скролл только здесь, чтобы topbar/sidebar не уезжали.
+   */
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 0;
+  background: transparent;
+}
+
+/* AUTH: выравнивание формы по вертикали */
+.auth .main--auth{
+  min-height: 100dvh;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding: 18px;
+}
+
+
+
+.pagehead{ margin: 6px 0 14px; }
+
+.grid{
+  display:grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.stack{
+  display:flex;
+  flex-direction:column;
+  gap: 12px;
+}
+
+/* responsive: disabled by canon */
+@media (max-width: 1024px){
+  .grid{ grid-template-columns: 1fr; }
+}

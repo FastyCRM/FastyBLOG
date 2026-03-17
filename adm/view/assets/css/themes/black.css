@@ -1,0 +1,43 @@
+/* =========================================================
+   THEME: black
+   ROLE: Киношная, читаемая, как бывшая color
+   ========================================================= */
+
+:root[data-theme="black"]{
+  --page-bg-1: #0B1220;
+  --page-bg-2: #0A0F1A;
+  --page-glow-1: rgba(255, 140, 0, 0.16);
+  --page-glow-2: rgba(0, 170, 255, 0.12);
+
+  --text: rgba(255,255,255,0.94);
+  --text-muted: rgba(255,255,255,0.64);
+  --text-faint: rgba(255,255,255,0.46);
+
+  --surface: rgba(255,255,255,0.065);
+  --surface-2: rgba(255,255,255,0.09);
+  --surface-3: rgba(255,255,255,0.12);
+  --surface-solid: #141922;
+
+  --border: rgba(255,255,255,0.14);
+  --border-soft: rgba(255,255,255,0.09);
+
+  --shadow-1: 0 10px 30px rgba(0,0,0,0.38);
+  --shadow-2: 0 2px 10px rgba(0,0,0,0.28);
+
+  --accent: #FF9A3C;
+  --accent-2: #35B6FF;
+  --accent-ok: #3AD29F;
+  --accent-warn: #FFB020;
+  --accent-bad: #FF4D4D;
+
+  --control-bg: #2A2F38;
+  --control-bg-hover: #323844;
+  --control-border: rgba(255,255,255,0.14);
+  --focus: rgba(53, 182, 255, 0.45);
+
+  --table-row: rgba(255,255,255,0.05);
+  --table-row-hover: rgba(255,255,255,0.08);
+
+  --radius: 10px;
+  --blur: 10px;
+}

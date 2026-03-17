@@ -1,0 +1,95 @@
+/*
+ * FILE: /adm/view/assets/css/components/select.css
+ * ROLE: Custom select (UI)
+ * CONNECTIONS:
+ *  - uses --control-*, --border*, --text, --surface-solid from theme
+ */
+
+.ui-select{
+  position: relative;
+  width: 100%;
+  margin-bottom: 0;
+  z-index: 1;
+}
+
+.ui-select.is-open{
+  z-index: 260;
+}
+
+.ui-select__btn{
+  position: relative;
+  width: 100%;
+  text-align: left;
+  padding-right: 30px;
+  cursor: pointer;
+}
+
+.ui-select__btn::after{
+  content: "\25BE";
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0.7;
+}
+
+.ui-select__list{
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  background: var(--surface-solid);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  padding: 4px;
+  display: none;
+  max-height: 200px;
+  overflow: auto;
+  z-index: 270;
+  box-shadow: var(--shadow-2);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.25) transparent;
+}
+
+.ui-select.is-open .ui-select__list{ display:block; }
+.ui-select.is-up .ui-select__list{
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+
+.ui-select__item{
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.ui-select__item:hover{
+  background: var(--control-bg-hover);
+}
+
+.ui-select__item.is-active{
+  background: var(--surface-3);
+}
+
+.ui-select__list::-webkit-scrollbar{
+  width: 6px;
+  height: 6px;
+}
+
+.ui-select__list::-webkit-scrollbar-track{
+  background: transparent;
+}
+
+.ui-select__list::-webkit-scrollbar-thumb{
+  background: rgba(255,255,255,0.25);
+  border-radius: 6px;
+}
+
+.ui-select__list::-webkit-scrollbar-thumb:hover{
+  background: rgba(255,255,255,0.35);
+}

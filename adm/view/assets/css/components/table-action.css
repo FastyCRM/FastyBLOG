@@ -1,0 +1,69 @@
+/*
+ * FILE: /adm/view/assets/css/components/table-action.css
+ * ROLE: Table actions (compact, right-aligned)
+ */
+
+/* усиливаем прижим вправо внутри таблицы */
+.table .t-right{ text-align:right; }
+
+/* контейнер действий: фикс геометрия, чтобы не разваливалось */
+.table__actions{
+  display:inline-flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:8px;
+  white-space: nowrap;      /* ничего не переносим */
+}
+
+/* форма не ломает inline-flex */
+.table__actionform{
+  display:inline-flex;
+  margin:0;
+}
+
+/* компактная иконка действия в таблице (без декоративной рамки-кнопки) */
+.table__actions .iconbtn--sm,
+.table__actionform .iconbtn--sm{
+  width:36px;
+  height:36px;
+  min-width:36px;
+  min-height:36px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  border-radius: 10px;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+.table__actions .iconbtn--sm:hover,
+.table__actionform .iconbtn--sm:hover{
+  background: rgba(255,255,255,0.08);
+}
+
+.table__actions .iconbtn--sm:focus,
+.table__actionform .iconbtn--sm:focus{
+  box-shadow: 0 0 0 3px var(--focus);
+}
+
+/* иконка внутри не должна менять высоту строки */
+.table__actions .iconbtn--sm i,
+.table__actionform .iconbtn--sm i{
+  line-height: 1;
+  font-size: 18px;
+}
+
+/* тег/бейдж */
+.tag{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:6px 10px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.03);
+  font-size:12px;
+  white-space:nowrap;
+}

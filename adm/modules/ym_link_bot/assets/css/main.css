@@ -1,0 +1,195 @@
+.ymlb-card {
+  margin-bottom: 14px;
+}
+
+.ymlb-card-head-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ymlb-layout {
+  margin-bottom: 14px;
+}
+
+.ymlb-layout > .ymlb-card {
+  margin-bottom: 0;
+  height: 100%;
+}
+
+.ymlb-topline {
+  display: grid;
+  gap: 6px;
+}
+
+.ymlb-top-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.ymlb-form {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.ymlb-form-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: end;
+}
+
+.ymlb-form-grid > input[type="hidden"] {
+  display: none;
+}
+
+.ymlb-form-grid > .field {
+  min-width: 0;
+}
+
+.ymlb-mini-hint {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.ymlb-form-grid > .btn {
+  grid-column: 1 / -1;
+  justify-self: end;
+}
+
+.ymlb-layout .ymlb-form-grid {
+  grid-template-columns: 1fr;
+}
+
+.ymlb-layout .ymlb-form-grid > .btn {
+  justify-self: stretch;
+}
+
+.input--readonly {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  opacity: 0.85;
+}
+
+@media (max-width: 1200px) {
+  .ymlb-form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ymlb-layout .ymlb-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .ymlb-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ymlb-form-grid > .btn {
+    justify-self: stretch;
+  }
+}
+
+.ymlb-form-inline {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  align-items: end;
+}
+
+.ymlb-webhook-box {
+  display: grid;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.ymlb-webhook-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ymlb-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.ymlb-dot.is-on {
+  background: #2ab35d;
+  box-shadow: 0 0 0 4px rgba(42, 179, 93, 0.15);
+}
+
+.ymlb-dot.is-off {
+  background: #d44b4b;
+  box-shadow: 0 0 0 4px rgba(212, 75, 75, 0.12);
+}
+
+.ymlb-webhook-text.is-on {
+  color: #2ab35d;
+}
+
+.ymlb-webhook-text.is-off {
+  color: #d44b4b;
+}
+
+.ymlb-webhook-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ymlb-pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(0, 0, 0, 0.03);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  padding: 10px;
+  margin: 0;
+}
+
+.ymlb-modal {
+  width: min(860px, calc(100vw - 32px));
+  max-width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  padding: 0;
+  color: inherit;
+  background: #1a253f;
+}
+
+.ymlb-modal::backdrop {
+  background: rgba(8, 14, 28, 0.65);
+}
+
+.ymlb-modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.ymlb-modal__title {
+  font-weight: 600;
+}
+
+.ymlb-modal__body {
+  padding: 14px;
+}
+
+.ymlb-modal .ymlb-form {
+  margin-bottom: 0;
+}
+
+.ymlb-settings-panel {
+  margin: 0;
+  width: min(1040px, calc(100vw - 32px));
+}

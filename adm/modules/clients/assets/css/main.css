@@ -1,0 +1,132 @@
+/**
+ * FILE: /adm/modules/clients/assets/css/main.css
+ * ROLE: styles for clients search dropdown.
+ */
+
+.clients-search-card {
+  margin-bottom: 12px;
+  box-shadow: none;
+  border-color: var(--border-soft);
+}
+
+.is-hidden {
+  display: none !important;
+}
+
+.clients-search-card .card__body {
+  overflow: visible;
+}
+
+.clients-search-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  overflow: visible;
+}
+
+.clients-search-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  overflow: visible;
+}
+
+.clients-search-field {
+  min-width: 0;
+  position: relative;
+}
+
+.clients-search-buttons {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.clients-search-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.clients-search-results {
+  margin-top: 0;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 60;
+  max-height: 220px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--surface-solid, #ffffff);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+}
+
+.clients-search-empty {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 60;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--surface-solid, #ffffff);
+  color: var(--text-muted);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+}
+
+.clients-search-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--surface);
+  text-decoration: none;
+  color: var(--text);
+}
+
+.clients-search-item:hover {
+  background: var(--surface-2);
+}
+
+.clients-search-item.is-active {
+  border-color: var(--accent);
+}
+
+.clients-search-item__name {
+  font-weight: 600;
+}
+
+.clients-search-item__meta {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+@media (max-width: 980px) {
+  .clients-search-top {
+    grid-template-columns: 1fr;
+  }
+
+  .clients-search-form {
+    grid-template-columns: 1fr;
+  }
+
+  .clients-search-buttons {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .clients-search-actions {
+    justify-content: flex-start;
+  }
+}

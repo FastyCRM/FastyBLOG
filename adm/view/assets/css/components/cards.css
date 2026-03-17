@@ -1,0 +1,131 @@
+/*
+ * FILE: /adm/view/assets/css/components/cards.css
+ * ROLE: Cards (floating surfaces)
+ * CONNECTIONS:
+ *  - uses --surface*, --border*, --shadow-1, --radius
+ */
+
+.card{
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+
+  /* ОСТАВЛЯЕМ ТОЛЬКО ТЕНЬ */
+  box-shadow: var(--shadow-1);
+
+  /* backdrop-filter + shadow = грязь */
+  backdrop-filter: none;
+}
+
+.card__label{
+  padding: 12px 14px 2px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.card__value{
+  padding: 0 14px 14px;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.card__head{
+  padding: 14px;
+  border-bottom: 1px solid var(--border-soft);
+  display:flex;
+  flex-direction:column;
+  gap: 4px;
+}
+
+.card__head--row{
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.card__head-main{
+  min-width: 0;
+}
+
+.card__head-actions{
+  margin-left: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.card__title{ font-weight: 800; letter-spacing: 0.1px; }
+.card__hint{ font-size: 12px; }
+
+.card__body{ padding: 14px; }
+
+.card__foot{
+  padding: 12px 14px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.info-grid{
+  display:grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px 18px;
+}
+
+.info-grid__item{
+  display:flex;
+  gap:6px;
+  align-items:baseline;
+  font-size:13px;
+  color: var(--text-muted);
+}
+
+.info-grid__label{
+  color: var(--text-muted);
+  white-space:nowrap;
+}
+
+.info-grid__value{
+  color: var(--text);
+  font-weight:600;
+  word-break: break-word;
+}
+
+.info-cols{
+  display:grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px 24px;
+}
+
+.info-col{
+  display:flex;
+  flex-direction:column;
+  gap: 6px;
+}
+
+.card-grid-2{
+  display:grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+@media (max-width: 980px){
+  .info-grid{ grid-template-columns: 1fr; }
+  .info-cols{ grid-template-columns: 1fr; }
+  .card-grid-2{ grid-template-columns: 1fr; }
+}
+
+/* Skeleton */
+.skeleton{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+
+.skeleton__bar{
+  height: 44px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+}

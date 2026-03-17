@@ -1,0 +1,124 @@
+/*
+ * FILE: /adm/modules/services/assets/css/main.css
+ * ROLE: Стили модуля services
+ */
+
+.services-toolbar__body{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  flex-wrap:wrap;
+}
+
+.services-toolbar__actions{
+  display:flex;
+  gap:8px;
+}
+
+.services-search{
+  position:relative;
+  flex:1 1 320px;
+  max-width:520px;
+}
+
+.services-search__input{
+  width:100%;
+}
+
+.services-search__list{
+  position:absolute;
+  left:0;
+  right:0;
+  top: calc(100% + 6px);
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding:4px;
+  display:none;
+  max-height:220px;
+  overflow:auto;
+  z-index:60;
+}
+
+.services-search.is-open .services-search__list{
+  display:block;
+}
+
+.services-search__item{
+  width:100%;
+  text-align:left;
+  background: transparent;
+  border:0;
+  color: var(--text);
+  padding:8px 10px;
+  border-radius:8px;
+  cursor:pointer;
+  display:flex;
+  justify-content:space-between;
+  gap:10px;
+}
+
+.services-search__item:hover{
+  background: var(--control-bg-hover);
+}
+
+.services-search__type{
+  font-size:11px;
+  color: var(--text-muted);
+  white-space:nowrap;
+}
+
+.services-row.is-disabled{
+  opacity:0.6;
+}
+
+.services-grid .table{
+  min-width: 0;
+}
+
+.services-row[data-services-type="category"]{
+  cursor:pointer;
+}
+
+.services-row.is-selected{
+  background: var(--table-row-hover);
+}
+
+.services-checklist{
+  border: 1px solid var(--border-soft);
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  padding:8px;
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  max-height:220px;
+  overflow:auto;
+}
+
+.services-check{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:6px 8px;
+  border-radius:8px;
+}
+
+.services-check:hover{
+  background: var(--control-bg-hover);
+}
+
+@media (max-width: 980px){
+  .services-toolbar__body{
+    flex-direction:column;
+    align-items:stretch;
+  }
+  .services-toolbar__actions{
+    justify-content:flex-end;
+    width:100%;
+  }
+  .services-search{
+    max-width:none;
+  }
+}

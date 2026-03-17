@@ -1,0 +1,61 @@
+/**
+ * FILE: /adm/modules/tg_system_users/assets/css/main.css
+ * ROLE: Локальные стили модуля tg_system_users
+ */
+
+.tg-su-head__body{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+}
+
+.tg-su-head__left h1{
+  margin:0 0 6px;
+}
+
+.tg-su-grid{
+  display:grid;
+  gap:12px;
+  margin-top:12px;
+  margin-bottom:12px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.tg-su-status{
+  display:grid;
+  gap:8px;
+}
+
+.tg-su-actions{
+  display:inline-flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:8px;
+}
+
+.tg-su-code{
+  margin:0 0 8px;
+  padding:10px 12px;
+  border-radius:10px;
+  border:1px solid var(--border-soft);
+  background:rgba(255,255,255,0.02);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size:13px;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+}
+
+.tg-su-btn-plain{
+  border-color: transparent;
+  background: transparent;
+}
+
+.tg-su-btn-plain:hover{
+  background: rgba(255,255,255,0.08);
+}
+
+.tg-su-btn-plain:disabled{
+  opacity: .45;
+  cursor: not-allowed;
+}

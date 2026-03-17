@@ -1,0 +1,110 @@
+/*
+ * FILE: /adm/view/assets/css/base/main_grid.css
+ * ROLE: Базовая адаптивная сетка и контейнеры layout-shell.
+ * CONNECTIONS:
+ *  - подключается из /adm/view/assets/css/main.css
+ *  - использует токены темы: --border-soft, --text-muted
+ *
+ * NOTES:
+ *  - Минимальный набор классов для поэтапной миграции модулей.
+ *  - Без переопределения модульных компонентов.
+ */
+
+:root{
+  --l-gap: 12px;
+  --l-main-max: 1920px;
+  --l-main-pad-x: 18px;
+  --l-main-pad-y: 18px;
+}
+
+.main{
+  padding: var(--l-main-pad-y) var(--l-main-pad-x) 28px;
+}
+
+.main > *{
+  width: 100%;
+  max-width: var(--l-main-max);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.l-row{
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--l-gap);
+}
+
+.l-col{
+  min-width: 0;
+  grid-column: span 12;
+}
+
+.l-col--2{ grid-column: span 2; }
+.l-col--3{ grid-column: span 3; }
+.l-col--4{ grid-column: span 4; }
+.l-col--6{ grid-column: span 6; }
+.l-col--8{ grid-column: span 8; }
+.l-col--9{ grid-column: span 9; }
+.l-col--12{ grid-column: span 12; }
+
+.l-grid-auto{
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--l-gap);
+}
+
+.l-grid-auto > *{
+  min-width: 0;
+}
+
+@media (max-width: 1599px){
+  .l-grid-auto{
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .l-col--xl-2{ grid-column: span 2; }
+  .l-col--xl-3{ grid-column: span 3; }
+  .l-col--xl-4{ grid-column: span 4; }
+  .l-col--xl-6{ grid-column: span 6; }
+  .l-col--xl-8{ grid-column: span 8; }
+  .l-col--xl-9{ grid-column: span 9; }
+  .l-col--xl-12{ grid-column: span 12; }
+}
+
+@media (max-width: 1199px){
+  :root{
+    --l-main-pad-x: 14px;
+    --l-main-pad-y: 14px;
+  }
+
+  .l-grid-auto{
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .l-col--lg-2{ grid-column: span 2; }
+  .l-col--lg-3{ grid-column: span 3; }
+  .l-col--lg-4{ grid-column: span 4; }
+  .l-col--lg-6{ grid-column: span 6; }
+  .l-col--lg-8{ grid-column: span 8; }
+  .l-col--lg-9{ grid-column: span 9; }
+  .l-col--lg-12{ grid-column: span 12; }
+}
+
+@media (max-width: 767px){
+  :root{
+    --l-main-pad-x: 10px;
+    --l-main-pad-y: 10px;
+  }
+
+  .l-grid-auto{
+    grid-template-columns: 1fr;
+  }
+
+  .l-col--sm-2{ grid-column: span 2; }
+  .l-col--sm-3{ grid-column: span 3; }
+  .l-col--sm-4{ grid-column: span 4; }
+  .l-col--sm-6{ grid-column: span 6; }
+  .l-col--sm-8{ grid-column: span 8; }
+  .l-col--sm-9{ grid-column: span 9; }
+  .l-col--sm-12{ grid-column: span 12; }
+}

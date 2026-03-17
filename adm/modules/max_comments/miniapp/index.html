@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Fastibos Mini App</title>
+  <script src="https://st.max.ru/js/max-web-app.js"></script>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, #f5f7ff 0%, #e6fbff 100%);
+      color: #10223a;
+    }
+    .card {
+      width: min(92vw, 560px);
+      border-radius: 16px;
+      background: #ffffff;
+      box-shadow: 0 10px 30px rgba(16, 34, 58, 0.12);
+      padding: 28px 24px;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(24px, 5vw, 36px);
+      line-height: 1.15;
+    }
+  </style>
+</head>
+<body>
+  <section class="card" role="main" aria-label="Fastibos Mini App">
+    <h1>Добро пожаловать в фастибос</h1>
+  </section>
+
+  <script>
+    (function () {
+      if (!window.Max || !window.Max.WebApp) return;
+
+      try {
+        window.Max.WebApp.ready();
+        window.Max.WebApp.expand();
+      } catch (e) {
+        // no-op
+      }
+    })();
+  </script>
+</body>
+</html>
+

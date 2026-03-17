@@ -1,0 +1,9 @@
+/*
+ * FILE: /adm/view/assets/css/utilities/helpers.css
+ * ROLE: Helpers
+ * CONNECTIONS:
+ *  - none
+ */
+
+.hidden{ display:none !important; }
+.u-mb-12{ margin-bottom: 12px !important; }

@@ -1,0 +1,120 @@
+/* FILE: /adm/view/assets/css/main.css
+ * ROLE: CSS assembler (imports only)
+ * CONNECTIONS:
+ *  - themes/* (variables only)
+ *  - base/* (layout foundation)
+ *  - components/* (UI blocks)
+ *  - utilities/* (helpers/states)
+ */
+
+@import "./themes/color.css";
+@import "./themes/black.css";
+@import "./themes/light.css";
+
+@import "./base/reset.css";
+@import "./base/typography.css";
+@import "./base/layout.css";
+@import "./base/main_grid.css";
+
+@import "./components/buttons.css";
+@import "./components/select.css";
+@import "./components/sidebar.css";
+@import "./components/topbar.css";
+@import "./components/cards.css";
+@import "./components/table.css";
+@import "./components/table-action.css";
+@import "./components/modal.css";
+
+@import "./utilities/helpers.css";
+@import "./utilities/states.css";
+@import "./utilities/flash.css";
+@import "./utilities/scrollbar.css";
+
+
+/* Полный список CSS классов:
+
+Base (Базовые)
+
+.app
+.shell
+.main
+.pagehead
+.grid
+.stack
+.h1
+.muted
+.ta-r
+Components — Buttons
+
+.field
+.field--stack
+.field__label
+.select
+.input
+.btn
+.btn--wide
+.btn--accent
+.btn--danger
+.iconbtn
+.iconbtn__bars
+Components — Cards
+
+.card
+.card__label
+.card__value
+.card__head
+.card__title
+.card__hint
+.card__body
+.card__foot
+.skeleton
+.skeleton__bar
+Components — Modal
+
+.modal
+.modal.is-open
+.modal__backdrop
+.modal__panel
+.modal__head
+.modal__foot
+.modal__title
+.modal__body
+Components — Sidebar
+
+.sidebar
+.sidebar__brand
+.sidebar__footer
+.brand
+.brand__dot
+.brand__name
+.menu
+.menu__item
+.menu__item:hover
+.menu__item.is-active
+.menu__icon
+.menu__label
+.app.is-collapsed .sidebar
+.app.is-collapsed .menu__label
+.app.is-collapsed .brand__name
+.app.is-collapsed .field__label
+.app.is-collapsed .sidebar__footer
+.app.is-collapsed .sidebar__brand
+.app.is-collapsed .menu__item
+.app.is-mobile-menu .sidebar
+.app.is-mobile-menu::before
+Components — Table
+
+.table-wrap
+.table
+.table th, .table td
+.table thead th
+.table tbody tr:hover
+Components — Topbar
+
+.topbar
+.topbar__title
+.topbar__right
+Utilities
+
+.hidden
+.is-disabled */

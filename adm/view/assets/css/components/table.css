@@ -1,0 +1,203 @@
+/*
+ * FILE: /adm/view/assets/css/components/table.css
+ * ROLE: Tables
+ * CONNECTIONS:
+ *  - uses --border-soft, --table-row-hover
+ */
+
+.table-wrap{ overflow:auto; border-radius: var(--radius); }
+
+.table-wrap--no-x{
+  overflow-x: hidden;
+}
+
+.table{
+  width:100%;
+  border-collapse: collapse;
+  min-width: 520px;
+}
+
+.table.table--fit{
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.table.table--fit th,
+.table.table--fit td{
+  white-space: normal !important;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.table.table--fit code{
+  white-space: normal;
+}
+
+.table th, .table td{
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  text-align:left;
+  white-space:nowrap;
+}
+
+.table th, .table td{
+  vertical-align: middle; /* чтобы контент строки не плясал */
+}
+
+.table .t-right{ text-align:right; }
+
+
+.table thead th{
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.table tbody tr:hover{ background: var(--table-row-hover); }
+
+
+/* ===== compact grid mode (opt-in): <=600 -> 2 cols, narrow -> 1 col ===== */
+
+.table--compact-grid .table-col-id{
+  display:none;
+}
+
+@media (max-width: 600px){
+  .table-wrap.table-wrap--compact-grid{
+    overflow-x: hidden;
+  }
+
+  .table.table--compact-grid{
+    min-width: 0;
+    table-layout: fixed;
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+
+  .table.table--compact-grid thead{
+    display:none;
+  }
+
+  .table.table--compact-grid tbody{
+    display:grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap:8px;
+  }
+
+  .table.table--compact-grid tbody tr{
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+    border:1px solid var(--border-soft);
+    border-radius:12px;
+    background: var(--surface-2);
+    padding:8px 10px;
+  }
+
+  .table.table--compact-grid tbody td{
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:10px;
+    min-width:0;
+    white-space:normal;
+    border:none;
+    border-radius:0;
+    padding:0;
+    background: transparent;
+    text-align:right;
+  }
+
+  .table.table--compact-grid tbody td::before{
+    content: attr(data-label);
+    display:inline-block;
+    color: var(--text-muted);
+    font-size:12px;
+    margin-right:auto;
+    text-align:left;
+    white-space:nowrap;
+  }
+
+  .table.table--compact-grid tbody td.t-right{
+    text-align:right;
+  }
+
+  .table.table--compact-grid tbody td.table-col-id{
+    display:none;
+  }
+
+  .table.table--compact-grid tbody tr.table-row--empty{
+    grid-column: 1 / -1;
+    display:block;
+    border:none;
+    background: transparent;
+    padding:0 2px;
+  }
+
+  .table.table--compact-grid tbody td.table-cell--empty{
+    display:block;
+    text-align:left;
+    border:none;
+    background: transparent;
+    padding:0;
+  }
+
+  .table.table--compact-grid tbody td.table-cell--empty::before{
+    content:none;
+  }
+}
+
+@media (max-width: 380px){
+  .table.table--compact-grid tbody{
+    grid-template-columns: 1fr;
+  }
+}
+
+
+
+/* ===== modules table responsive: НЕ разваливаем, а скроллим ===== */
+
+.tablewrap{
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: var(--radius, 16px);
+}
+
+/* чтобы таблица не пыталась ужаться и ломать колонки */
+.table--modules{
+  min-width: 980px;          /* под твои колонки, можно 900-1100 */
+  table-layout: fixed;
+}
+
+/* фикс ширины по смыслу, чтобы не прыгало */
+.table--modules th:nth-child(1),
+.table--modules td:nth-child(1){ width:44px; }
+
+.table--modules th:nth-child(2),
+.table--modules td:nth-child(2){ width:220px; }
+
+.table--modules th:nth-child(3),
+.table--modules td:nth-child(3){ width:80px; }
+
+.table--modules th:nth-child(4),
+.table--modules td:nth-child(4){ width:80px; }
+
+.table--modules th:nth-child(5),
+.table--modules td:nth-child(5){ width:260px; }
+
+.table--modules th:nth-child(6),
+.table--modules td:nth-child(6){ width:140px; }
+
+.table--modules th:nth-child(7),
+.table--modules td:nth-child(7){ width:140px; }
+
+.table--modules th:nth-child(8),
+.table--modules td:nth-child(8){ width:90px; }
+
+/* чтоб текст в ролях не раздувал строку */
+.table--modules td:nth-child(5){
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

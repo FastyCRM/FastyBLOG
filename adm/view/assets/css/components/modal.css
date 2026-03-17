@@ -1,0 +1,55 @@
+/*
+ * FILE: /adm/view/assets/css/components/modal.css
+ * ROLE: Global modal (infrastructure)
+ * CONNECTIONS:
+ *  - uses --surface-solid, --border*, --shadow-1, --radius
+ */
+
+.modal{
+  position:fixed;
+  inset:0;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  padding: 18px;
+  z-index: 999;
+}
+.modal.is-open{ display:flex; }
+
+.modal__backdrop{
+  position:absolute;
+  inset:0;
+  background: rgba(0,0,0,0.55);
+}
+
+.modal__panel{
+  position:relative;
+  width: min(720px, 100%);
+  max-height: calc(100vh - 36px);
+  display:flex;
+  flex-direction:column;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-1);
+  backdrop-filter: none;
+  overflow:hidden;
+}
+
+.modal__head,
+.modal__foot{
+  padding: 12px 14px;
+  display:flex;
+  align-items:center;
+  gap: 10px;
+}
+
+.modal__head{ border-bottom: 1px solid var(--border-soft); }
+.modal__foot{ border-top: 1px solid var(--border-soft); justify-content:flex-end; }
+
+.modal__title{ font-weight: 900; letter-spacing: 0.1px; }
+.modal__body{
+  padding: 14px;
+  overflow-y:auto;
+  overscroll-behavior: contain;
+}

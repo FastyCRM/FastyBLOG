@@ -1,0 +1,20 @@
+/*
+ * FILE: /adm/view/assets/css/base/typography.css
+ * ROLE: Typography + text tokens usage
+ * CONNECTIONS:
+ *  - uses --text, --text-muted from theme
+ */
+
+body{
+  font: 14px/1.35 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+  color: var(--text);
+}
+
+.h1{
+  margin:0;
+  font-size: 34px;
+  letter-spacing: -0.4px;
+}
+
+.muted{ color: var(--text-muted); }
+.ta-r{ text-align:right !important; }

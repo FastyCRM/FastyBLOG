@@ -1,0 +1,59 @@
+/*
+ * FILE: /adm/view/assets/css/utilities/scrollbar.css
+ * ROLE: Унифицированные скроллы проекта
+ */
+
+:root{
+  --scrollbar-size: 8px;
+  --scrollbar-thumb: rgba(255,255,255,0.25);
+  --scrollbar-thumb-hover: rgba(255,255,255,0.4);
+  --scrollbar-track: transparent;
+}
+
+/* Глобально: красивый скролл везде, где он появляется */
+*{
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar{
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+
+*::-webkit-scrollbar-track{
+  background: var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar-thumb{
+  background: var(--scrollbar-thumb);
+  border-radius: 8px;
+}
+
+*::-webkit-scrollbar-thumb:hover{
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* Тонкий скролл (когда нужен аккуратнее) */
+.scroll-thin{
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.25) transparent;
+}
+
+.scroll-thin::-webkit-scrollbar{
+  width: 6px;
+  height: 6px;
+}
+
+.scroll-thin::-webkit-scrollbar-track{
+  background: transparent;
+}
+
+.scroll-thin::-webkit-scrollbar-thumb{
+  background: rgba(255,255,255,0.25);
+  border-radius: 6px;
+}
+
+.scroll-thin::-webkit-scrollbar-thumb:hover{
+  background: rgba(255,255,255,0.35);
+}

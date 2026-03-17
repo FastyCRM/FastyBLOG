@@ -1,0 +1,49 @@
+/* THEME: light
+   ROLE: Светлая НЕ белая. Студийный серо-молочный, не слепит. */
+
+:root[data-theme="light"]{
+  /* Page atmosphere */
+  --page-bg-1: #EEF1F5;
+  --page-bg-2: #E7EBF1;
+  --page-glow-1: rgba(255, 140, 0, 0.10);
+  --page-glow-2: rgba(0, 140, 255, 0.08);
+
+  /* Text */
+  --text: rgba(10,12,16,0.90);
+  --text-muted: rgba(10,12,16,0.62);
+  --text-faint: rgba(10,12,16,0.44);
+
+  /* Surfaces */
+  --surface: rgba(255,255,255,0.62);
+  --surface-2: rgba(255,255,255,0.74);
+  --surface-3: rgba(255,255,255,0.86);
+  --surface-solid: #ffffff;
+
+  /* Borders */
+  --border: rgba(10,12,16,0.10);
+  --border-soft: rgba(10,12,16,0.07);
+
+  /* Shadows */
+  --shadow-1: 0 14px 40px rgba(10,12,16,0.10);
+  --shadow-2: 0 3px 12px rgba(10,12,16,0.08);
+
+  /* Accent */
+  --accent: #FF7A1A;
+  --accent-2: #1F86FF;
+  --accent-ok: #1FAE7C;
+  --accent-warn: #E7A100;
+  --accent-bad: #E54848;
+
+  /* Controls */
+  --control-bg: #F4F6F9;
+  --control-bg-hover: #FFFFFF;
+  --control-border: rgba(10,12,16,0.12);
+  --focus: rgba(31, 134, 255, 0.25);
+
+  /* Table */
+  --table-row: rgba(255,255,255,0.55);
+  --table-row-hover: rgba(255,255,255,0.75);
+
+  --radius: 10px;
+  --blur: 10px;
+}

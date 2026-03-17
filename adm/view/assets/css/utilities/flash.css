@@ -1,0 +1,56 @@
+/*
+ * FILE: /adm/view/assets/css/utilities/flash.css
+ * ROLE: Flashbar (system messages)
+ * CONNECTIONS:
+ *  - tokens from themes/* (colors/borders/radius)
+ *
+ * NOTES:
+ *  - Всплывающая строка сверху, кнопка X, без влияния на высоту контента.
+ */
+
+.flashbar{
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(920px, calc(100vw - 24px));
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.flash{
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 12px;
+  border-radius: var(--radius, 14px);
+  border: 1px solid var(--border-soft);
+
+  /* меньше прозрачности — читаемее, меньше "стекла" */
+  background: rgba(0,0,0,0.90);
+}
+
+.flash__text{
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.flash__close{
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.flash__close:active{
+  transform: translateY(1px);
+}
