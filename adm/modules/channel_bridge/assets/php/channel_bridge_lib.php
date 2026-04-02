@@ -225,6 +225,196 @@ if (!function_exists('channel_bridge_now')) {
   }
 
   /**
+   * channel_bridge_tg_datetime_from_unix()
+   * Нормализует unix timestamp Telegram в DATETIME строку.
+   *
+   * @param int $ts
+   * @return string|null
+   */
+  function channel_bridge_tg_datetime_from_unix(int $ts): ?string
+  {
+    if ($ts <= 0) {
+      return null;
+    }
+
+    return date('Y-m-d H:i:s', $ts);
+  }
+
+  /**
+   * channel_bridge_extract_tg_update_meta()
+   * Возвращает компактные метаданные Telegram update без raw payload.
+   *
+   * @param array<string,mixed> $update
+   * @return array<string,mixed>
+   */
+  function channel_bridge_extract_tg_update_meta(array $update): array
+  {
+    $updateId = (int)($update['update_id'] ?? 0);
+    $type = '';
+    $msg = [];
+
+    foreach (['message', 'edited_message', 'channel_post', 'edited_channel_post'] as $candidate) {
+      if (!isset($update[$candidate]) || !is_array($update[$candidate])) {
+        continue;
+      }
+      $type = $candidate;
+      $msg = (array)$update[$candidate];
+      break;
+    }
+
+    if ($updateId <= 0 && !$msg) {
+      return [];
+    }
+
+    $chat = (array)($msg['chat'] ?? []);
+    $messageDateTs = (int)($msg['date'] ?? 0);
+    $editDateTs = (int)($msg['edit_date'] ?? 0);
+
+    return [
+      'update_id' => $updateId,
+      'update_type' => $type,
+      'chat_id' => trim((string)($chat['id'] ?? '')),
+      'chat_type' => trim((string)($chat['type'] ?? '')),
+      'message_id' => trim((string)($msg['message_id'] ?? '')),
+      'media_group_id' => trim((string)($msg['media_group_id'] ?? '')),
+      'message_date_ts' => $messageDateTs,
+      'edit_date_ts' => $editDateTs,
+      'message_date' => channel_bridge_tg_datetime_from_unix($messageDateTs),
+      'edit_date' => channel_bridge_tg_datetime_from_unix($editDateTs),
+    ];
+  }
+
+  /**
+   * channel_bridge_tg_update_audit_payload()
+   * Собирает компактный payload для аудита webhook-решений.
+   *
+   * @param array<string,mixed> $meta
+   * @param string $decision
+   * @param array<string,mixed> $extra
+   * @return array<string,mixed>
+   */
+  function channel_bridge_tg_update_audit_payload(array $meta, string $decision, array $extra = []): array
+  {
+    $payload = [
+      'decision' => trim($decision),
+      'update_id' => (int)($meta['update_id'] ?? 0),
+      'update_type' => trim((string)($meta['update_type'] ?? '')),
+      'chat_id' => trim((string)($meta['chat_id'] ?? '')),
+      'message_id' => trim((string)($meta['message_id'] ?? '')),
+      'media_group_id' => trim((string)($meta['media_group_id'] ?? '')),
+      'message_date' => trim((string)($meta['message_date'] ?? '')),
+      'edit_date' => trim((string)($meta['edit_date'] ?? '')),
+    ];
+
+    foreach ($payload as $key => $value) {
+      if ($value === '' || $value === 0) {
+        unset($payload[$key]);
+      }
+    }
+
+    foreach ($extra as $key => $value) {
+      $payload[$key] = $value;
+    }
+
+    return $payload;
+  }
+
+  /**
+   * channel_bridge_is_tg_update_stale()
+   * Проверяет, что channel_post слишком старый для автокросспоста.
+   *
+   * @param array<string,mixed> $meta
+   * @param int $maxAgeSeconds
+   * @return bool
+   */
+  function channel_bridge_is_tg_update_stale(array $meta, int $maxAgeSeconds = CHANNEL_BRIDGE_TG_UPDATE_MAX_AGE_SECONDS): bool
+  {
+    $type = trim((string)($meta['update_type'] ?? ''));
+    if ($type !== 'channel_post' && $type !== 'edited_channel_post') {
+      return false;
+    }
+
+    $messageTs = (int)($meta['message_date_ts'] ?? 0);
+    if ($messageTs <= 0 || $maxAgeSeconds <= 0) {
+      return false;
+    }
+
+    return ((time() - $messageTs) > $maxAgeSeconds);
+  }
+
+  /**
+   * channel_bridge_webhook_updates_table_available()
+   * Проверяет наличие таблицы дедупликации webhook update_id.
+   *
+   * @param PDO $pdo
+   * @return bool
+   */
+  function channel_bridge_webhook_updates_table_available(PDO $pdo): bool
+  {
+    return channel_bridge_schema_table_exists($pdo, CHANNEL_BRIDGE_TABLE_WEBHOOK_UPDATES);
+  }
+
+  /**
+   * channel_bridge_webhook_update_register()
+   * Пытается зарегистрировать входящий Telegram update_id для дедупликации.
+   *
+   * @param PDO $pdo
+   * @param array<string,mixed> $meta
+   * @return array<string,mixed>
+   */
+  function channel_bridge_webhook_update_register(PDO $pdo, array $meta): array
+  {
+    $updateId = (int)($meta['update_id'] ?? 0);
+    if ($updateId <= 0) {
+      return ['active' => false, 'duplicate' => false];
+    }
+
+    if (!channel_bridge_webhook_updates_table_available($pdo)) {
+      return ['active' => false, 'duplicate' => false];
+    }
+
+    try {
+      $pdo->prepare("
+        INSERT INTO " . CHANNEL_BRIDGE_TABLE_WEBHOOK_UPDATES . "
+        (
+          update_id,
+          update_type,
+          source_chat_id,
+          source_message_id,
+          media_group_id,
+          message_date,
+          edit_date
+        )
+        VALUES
+        (
+          :update_id,
+          :update_type,
+          :source_chat_id,
+          :source_message_id,
+          :media_group_id,
+          :message_date,
+          :edit_date
+        )
+      ")->execute([
+        ':update_id' => $updateId,
+        ':update_type' => trim((string)($meta['update_type'] ?? '')),
+        ':source_chat_id' => trim((string)($meta['chat_id'] ?? '')),
+        ':source_message_id' => trim((string)($meta['message_id'] ?? '')),
+        ':media_group_id' => trim((string)($meta['media_group_id'] ?? '')),
+        ':message_date' => $meta['message_date'] ?? null,
+        ':edit_date' => $meta['edit_date'] ?? null,
+      ]);
+    } catch (Throwable $e) {
+      if ((string)$e->getCode() === '23000') {
+        return ['active' => true, 'duplicate' => true];
+      }
+      throw $e;
+    }
+
+    return ['active' => true, 'duplicate' => false];
+  }
+
+  /**
    * channel_bridge_tg_text_link_urls()
    * Извлекает URL из Telegram entities типа text_link.
    *
@@ -250,6 +440,98 @@ if (!function_exists('channel_bridge_now')) {
       $uniq[$url] = true;
     }
     return array_keys($uniq);
+  }
+
+  /**
+   * channel_bridge_tg_text_links_html()
+   * Собирает HTML-текст с привязкой Telegram text_link к исходному тексту.
+   * Нужен для MAX: ссылка остаётся на тексте, но не распаковывается в голый URL.
+   *
+   * @param string $text
+   * @param mixed $entities
+   * @return string
+   */
+  function channel_bridge_tg_text_links_html(string $text, $entities): string
+  {
+    $text = (string)$text;
+    if ($text === '' || !is_array($entities) || !$entities) {
+      return htmlspecialchars($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    }
+
+    $links = [];
+    foreach ($entities as $entity) {
+      if (!is_array($entity)) continue;
+      if (trim((string)($entity['type'] ?? '')) !== 'text_link') continue;
+
+      $offset = (int)($entity['offset'] ?? -1);
+      $length = (int)($entity['length'] ?? 0);
+      $url = trim((string)($entity['url'] ?? ''));
+      if ($offset < 0 || $length <= 0 || $url === '') continue;
+
+      $links[] = [
+        'offset' => $offset,
+        'length' => $length,
+        'url' => $url,
+      ];
+    }
+
+    if (!$links) {
+      return htmlspecialchars($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    }
+
+    usort($links, static function (array $a, array $b): int {
+      return ((int)$a['offset'] <=> (int)$b['offset']);
+    });
+
+    $chars = preg_split('//u', $text, -1, PREG_SPLIT_NO_EMPTY);
+    if (!is_array($chars) || !$chars) {
+      return htmlspecialchars($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    }
+
+    $charUnits = [];
+    foreach ($chars as $idx => $char) {
+      $utf16 = mb_convert_encoding((string)$char, 'UTF-16BE', 'UTF-8');
+      $units = (int)(strlen($utf16) / 2);
+      $charUnits[$idx] = ($units > 0) ? $units : 1;
+    }
+
+    $out = '';
+    $charIndex = 0;
+    $utf16Pos = 0;
+    $linkIndex = 0;
+    $linksCount = count($links);
+
+    while ($charIndex < count($chars)) {
+      while ($linkIndex < $linksCount && (int)$links[$linkIndex]['offset'] < $utf16Pos) {
+        $linkIndex++;
+      }
+
+      if ($linkIndex < $linksCount && (int)$links[$linkIndex]['offset'] === $utf16Pos) {
+        $targetEnd = (int)$links[$linkIndex]['offset'] + (int)$links[$linkIndex]['length'];
+        $label = '';
+
+        while ($charIndex < count($chars) && $utf16Pos < $targetEnd) {
+          $label .= (string)$chars[$charIndex];
+          $utf16Pos += (int)($charUnits[$charIndex] ?? 1);
+          $charIndex++;
+        }
+
+        if ($label !== '') {
+          $out .= '<a href="' . htmlspecialchars((string)$links[$linkIndex]['url'], ENT_QUOTES | ENT_HTML5, 'UTF-8') . '">'
+            . htmlspecialchars($label, ENT_QUOTES | ENT_HTML5, 'UTF-8')
+            . '</a>';
+        }
+
+        $linkIndex++;
+        continue;
+      }
+
+      $out .= htmlspecialchars((string)$chars[$charIndex], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+      $utf16Pos += (int)($charUnits[$charIndex] ?? 1);
+      $charIndex++;
+    }
+
+    return $out;
   }
 
   /**
@@ -417,33 +699,54 @@ if (!function_exists('channel_bridge_now')) {
   }
 
   /**
-   * channel_bridge_max_plain_text()
-   * Преобразует HTML-разметку ссылок в обычный текст для MAX.
-   *
-   * Пример:
-   *   <a href="https://a.b">Текст</a> -> "Текст\nhttps://a.b"
+   * channel_bridge_max_markdown_escape()
+   * Экранирует markdown-символы в подписи ссылки для MAX.
    *
    * @param string $text
    * @return string
    */
-  function channel_bridge_max_plain_text(string $text): string
+  function channel_bridge_max_markdown_escape(string $text): string
+  {
+    $text = str_replace('\\', '\\\\', $text);
+    $text = str_replace(['[', ']'], ['\\[', '\\]'], $text);
+    return $text;
+  }
+
+  /**
+   * channel_bridge_max_prepare_text()
+   * Готовит текст для MAX:
+   *  - HTML-ссылки переводит в markdown-гиперссылки;
+   *  - не разворачивает скрытые ссылки в голые URL;
+   *  - сообщает, нужен ли format=markdown.
+   *
+   * @param string $text
+   * @return array{text:string,markdown:int}
+   */
+  function channel_bridge_max_prepare_text(string $text): array
   {
     $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
     $text = preg_replace('~<br\s*/?>~iu', "\n", $text);
     if (!is_string($text)) $text = '';
 
-    $text = preg_replace_callback('~<a\s+[^>]*href\s*=\s*(["\'])(.*?)\1[^>]*>(.*?)</a>~isu', static function (array $m): string {
+    $markdown = 0;
+    $text = preg_replace_callback('~<a\s+[^>]*href\s*=\s*(["\'])(.*?)\1[^>]*>(.*?)</a>~isu', static function (array $m) use (&$markdown): string {
       $url = trim((string)($m[2] ?? ''));
       $label = trim(strip_tags((string)($m[3] ?? '')));
       if ($url === '') return $label;
       if ($label === '') return $url;
       if (mb_strtolower($label, 'UTF-8') === mb_strtolower($url, 'UTF-8')) return $url;
-      return $label . "\n" . $url;
+
+      $markdown = 1;
+      return '[' . channel_bridge_max_markdown_escape($label) . '](' . $url . ')';
     }, $text);
     if (!is_string($text)) $text = '';
 
     $text = strip_tags($text);
-    return channel_bridge_normalize_text($text);
+
+    return [
+      'text' => channel_bridge_normalize_text($text),
+      'markdown' => $markdown,
+    ];
   }
 
   /**
@@ -1077,6 +1380,140 @@ if (!function_exists('channel_bridge_now')) {
   }
 
   /**
+   * channel_bridge_route_blacklist_domains_parse()
+   * Разбирает чёрный список доменов маршрута в нормализованный массив.
+   *
+   * @param string $value
+   * @return array<int,string>
+   */
+  function channel_bridge_route_blacklist_domains_parse(string $value): array
+  {
+    $value = trim(channel_bridge_to_utf8($value));
+    if ($value === '') return [];
+
+    $parts = preg_split('~[\s,;]+~u', $value);
+    if (!is_array($parts) || !$parts) return [];
+
+    $out = [];
+    foreach ($parts as $part) {
+      $domain = channel_bridge_link_rule_normalize_domain_root((string)$part);
+      if ($domain === '') continue;
+      $out[$domain] = true;
+    }
+
+    return array_keys($out);
+  }
+
+  /**
+   * channel_bridge_route_blacklist_domains_normalize()
+   * Нормализует чёрный список доменов маршрута для хранения в БД.
+   *
+   * @param string $value
+   * @return string
+   */
+  function channel_bridge_route_blacklist_domains_normalize(string $value): string
+  {
+    $domains = channel_bridge_route_blacklist_domains_parse($value);
+    return $domains ? implode("\n", $domains) : '';
+  }
+
+  /**
+   * channel_bridge_url_domain_normalize()
+   * Извлекает и нормализует домен из URL.
+   *
+   * @param string $url
+   * @return string
+   */
+  function channel_bridge_url_domain_normalize(string $url): string
+  {
+    $url = trim(channel_bridge_to_utf8($url));
+    if ($url === '') return '';
+
+    if (!preg_match('~^https?://~i', $url)) {
+      $url = 'https://' . ltrim($url, '/');
+    }
+
+    $host = trim((string)(parse_url($url, PHP_URL_HOST) ?? ''));
+    if ($host === '') return '';
+
+    return channel_bridge_link_rule_normalize_domain_root($host);
+  }
+
+  /**
+   * channel_bridge_domain_matches_rule()
+   * Проверяет совпадение домена URL с правилом чёрного списка.
+   *
+   * @param string $domain
+   * @param string $ruleDomain
+   * @return bool
+   */
+  function channel_bridge_domain_matches_rule(string $domain, string $ruleDomain): bool
+  {
+    $domain = channel_bridge_link_rule_normalize_domain_root($domain);
+    $ruleDomain = channel_bridge_link_rule_normalize_domain_root($ruleDomain);
+    if ($domain === '' || $ruleDomain === '') return false;
+    if ($domain === $ruleDomain) return true;
+
+    $suffix = '.' . $ruleDomain;
+    $domainLen = strlen($domain);
+    $suffixLen = strlen($suffix);
+    if ($domainLen <= $suffixLen) return false;
+
+    return substr($domain, -$suffixLen) === $suffix;
+  }
+
+  /**
+   * channel_bridge_route_blacklist_match()
+   * Проверяет, должен ли маршрут быть пропущен по доменным ссылкам в посте.
+   *
+   * @param string $blacklistDomains
+   * @param string $text
+   * @param array<int,string> $extraUrls
+   * @return array{blocked:bool,matched_domains:array<int,string>,post_domains:array<int,string>}
+   */
+  function channel_bridge_route_blacklist_match(string $blacklistDomains, string $text, array $extraUrls = []): array
+  {
+    $blockedDomains = channel_bridge_route_blacklist_domains_parse($blacklistDomains);
+    if (!$blockedDomains) {
+      return ['blocked' => false, 'matched_domains' => [], 'post_domains' => []];
+    }
+
+    $rawUrls = channel_bridge_extract_urls_from_text($text);
+    foreach ($extraUrls as $url) {
+      $url = trim((string)$url);
+      if ($url === '') continue;
+      $rawUrls[] = $url;
+    }
+    if (!$rawUrls) {
+      return ['blocked' => false, 'matched_domains' => [], 'post_domains' => []];
+    }
+
+    $postDomainsMap = [];
+    foreach ($rawUrls as $url) {
+      $domain = channel_bridge_url_domain_normalize((string)$url);
+      if ($domain === '') continue;
+      $postDomainsMap[$domain] = true;
+    }
+    if (!$postDomainsMap) {
+      return ['blocked' => false, 'matched_domains' => [], 'post_domains' => []];
+    }
+
+    $matchedMap = [];
+    foreach (array_keys($postDomainsMap) as $postDomain) {
+      foreach ($blockedDomains as $ruleDomain) {
+        if (!channel_bridge_domain_matches_rule($postDomain, $ruleDomain)) continue;
+        $matchedMap[$ruleDomain] = true;
+      }
+    }
+
+    return [
+      'blocked' => !empty($matchedMap),
+      'matched_domains' => array_keys($matchedMap),
+      'post_domains' => array_keys($postDomainsMap),
+    ];
+  }
+
+  /**
    * channel_bridge_link_suffix_rules_list()
    * Возвращает список правил приписок для доменов.
    *
@@ -1319,10 +1756,10 @@ if (!function_exists('channel_bridge_now')) {
   {
     $dbName = channel_bridge_schema_db_name($pdo);
     if ($dbName === '') {
-      return CHANNEL_BRIDGE_TABLES;
+      return CHANNEL_BRIDGE_REQUIRED_TABLES;
     }
 
-    $tables = array_values(array_unique(array_filter(CHANNEL_BRIDGE_TABLES, static function ($name) {
+    $tables = array_values(array_unique(array_filter(CHANNEL_BRIDGE_REQUIRED_TABLES, static function ($name) {
       return trim((string)$name) !== '';
     })));
     if (!$tables) {
@@ -1352,6 +1789,96 @@ if (!function_exists('channel_bridge_now')) {
     }
 
     return $missing;
+  }
+
+  /**
+   * channel_bridge_schema_table_exists()
+   * Проверяет наличие конкретной таблицы в текущей БД.
+   *
+   * @param PDO $pdo
+   * @param string $tableName
+   * @return bool
+   */
+  function channel_bridge_schema_table_exists(PDO $pdo, string $tableName): bool
+  {
+    static $cache = [];
+
+    $tableName = trim($tableName);
+    if ($tableName === '') {
+      return false;
+    }
+    if (array_key_exists($tableName, $cache)) {
+      return (bool)$cache[$tableName];
+    }
+
+    $dbName = channel_bridge_schema_db_name($pdo);
+    if ($dbName === '') {
+      $cache[$tableName] = false;
+      return false;
+    }
+
+    $st = $pdo->prepare("
+      SELECT 1
+      FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = :db_name
+        AND TABLE_NAME = :table_name
+      LIMIT 1
+    ");
+    $st->execute([
+      ':db_name' => $dbName,
+      ':table_name' => $tableName,
+    ]);
+
+    $cache[$tableName] = ($st->fetchColumn() !== false);
+    return (bool)$cache[$tableName];
+  }
+
+  /**
+   * channel_bridge_schema_column_exists()
+   * Проверяет наличие колонки в конкретной таблице текущей БД.
+   *
+   * @param PDO $pdo
+   * @param string $tableName
+   * @param string $columnName
+   * @return bool
+   */
+  function channel_bridge_schema_column_exists(PDO $pdo, string $tableName, string $columnName): bool
+  {
+    static $cache = [];
+
+    $tableName = trim($tableName);
+    $columnName = trim($columnName);
+    if ($tableName === '' || $columnName === '') {
+      return false;
+    }
+
+    $cacheKey = $tableName . '::' . $columnName;
+    if (array_key_exists($cacheKey, $cache)) {
+      return (bool)$cache[$cacheKey];
+    }
+
+    $dbName = channel_bridge_schema_db_name($pdo);
+    if ($dbName === '') {
+      $cache[$cacheKey] = false;
+      return false;
+    }
+
+    $st = $pdo->prepare("
+      SELECT 1
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = :db_name
+        AND TABLE_NAME = :table_name
+        AND COLUMN_NAME = :column_name
+      LIMIT 1
+    ");
+    $st->execute([
+      ':db_name' => $dbName,
+      ':table_name' => $tableName,
+      ':column_name' => $columnName,
+    ]);
+
+    $cache[$cacheKey] = ($st->fetchColumn() !== false);
+    return (bool)$cache[$cacheKey];
   }
 
   /**
@@ -1578,6 +2105,11 @@ if (!function_exists('channel_bridge_now')) {
   {
     channel_bridge_require_schema($pdo);
 
+    $routesHasBlacklistDomains = channel_bridge_schema_column_exists($pdo, CHANNEL_BRIDGE_TABLE_ROUTES, 'blacklist_domains');
+    $blacklistSelect = $routesHasBlacklistDomains
+      ? "r.blacklist_domains,"
+      : "'' AS blacklist_domains,";
+
     $sql = "
       SELECT
         r.id,
@@ -1587,6 +2119,7 @@ if (!function_exists('channel_bridge_now')) {
         r.target_platform,
         r.target_chat_id,
         r.target_extra,
+        $blacklistSelect
         r.enabled,
         r.created_at,
         r.updated_at,
@@ -1699,6 +2232,11 @@ if (!function_exists('channel_bridge_now')) {
 
     if ($id <= 0) return null;
 
+    $routesHasBlacklistDomains = channel_bridge_schema_column_exists($pdo, CHANNEL_BRIDGE_TABLE_ROUTES, 'blacklist_domains');
+    $blacklistSelect = $routesHasBlacklistDomains
+      ? "blacklist_domains,"
+      : "'' AS blacklist_domains,";
+
     $st = $pdo->prepare("
       SELECT
         id,
@@ -1708,6 +2246,7 @@ if (!function_exists('channel_bridge_now')) {
         target_platform,
         target_chat_id,
         target_extra,
+        $blacklistSelect
         enabled,
         created_at,
         updated_at
@@ -1989,6 +2528,7 @@ if (!function_exists('channel_bridge_now')) {
     $targetPlatform = channel_bridge_norm_platform((string)($input['target_platform'] ?? ''));
     $targetChatId = channel_bridge_norm_chat_id((string)($input['target_chat_id'] ?? ''));
     $targetExtra = trim(channel_bridge_to_utf8((string)($input['target_extra'] ?? '')));
+    $blacklistDomains = channel_bridge_route_blacklist_domains_normalize((string)($input['blacklist_domains'] ?? ''));
     $enabled = ((int)($input['enabled'] ?? 0) === 1) ? 1 : 0;
 
     if ($sourcePlatform === '' || !in_array($sourcePlatform, channel_bridge_supported_sources(), true)) {
@@ -2018,6 +2558,7 @@ if (!function_exists('channel_bridge_now')) {
         'target_platform' => $targetPlatform,
         'target_chat_id' => $targetChatId,
         'target_extra' => $targetExtra,
+        'blacklist_domains' => $blacklistDomains,
         'enabled' => $enabled,
       ],
     ];
@@ -2055,30 +2596,45 @@ if (!function_exists('channel_bridge_now')) {
     }
 
     $data = (array)$valid['data'];
+    $routesHasBlacklistDomains = channel_bridge_schema_column_exists($pdo, CHANNEL_BRIDGE_TABLE_ROUTES, 'blacklist_domains');
+    if (!$routesHasBlacklistDomains && trim((string)($data['blacklist_domains'] ?? '')) !== '') {
+      throw new RuntimeException(channel_bridge_t('channel_bridge.error_route_blacklist_schema_missing'));
+    }
+
+    $fields = [
+      'title',
+      'source_platform',
+      'source_chat_id',
+      'target_platform',
+      'target_chat_id',
+      'target_extra',
+    ];
+    $placeholders = [
+      ':title',
+      ':source_platform',
+      ':source_chat_id',
+      ':target_platform',
+      ':target_chat_id',
+      ':target_extra',
+    ];
+    if ($routesHasBlacklistDomains) {
+      $fields[] = 'blacklist_domains';
+      $placeholders[] = ':blacklist_domains';
+    }
+    $fields[] = 'enabled';
+    $placeholders[] = ':enabled';
 
     $st = $pdo->prepare("
       INSERT INTO " . CHANNEL_BRIDGE_TABLE_ROUTES . "
       (
-        title,
-        source_platform,
-        source_chat_id,
-        target_platform,
-        target_chat_id,
-        target_extra,
-        enabled
+        " . implode(",\n        ", $fields) . "
       )
       VALUES
       (
-        :title,
-        :source_platform,
-        :source_chat_id,
-        :target_platform,
-        :target_chat_id,
-        :target_extra,
-        :enabled
+        " . implode(",\n        ", $placeholders) . "
       )
     ");
-    $st->execute([
+    $params = [
       ':title' => (string)$data['title'],
       ':source_platform' => (string)$data['source_platform'],
       ':source_chat_id' => (string)$data['source_chat_id'],
@@ -2086,7 +2642,11 @@ if (!function_exists('channel_bridge_now')) {
       ':target_chat_id' => (string)$data['target_chat_id'],
       ':target_extra' => (string)$data['target_extra'],
       ':enabled' => (int)$data['enabled'],
-    ]);
+    ];
+    if ($routesHasBlacklistDomains) {
+      $params[':blacklist_domains'] = (string)($data['blacklist_domains'] ?? '');
+    }
+    $st->execute($params);
 
     return (int)$pdo->lastInsertId();
   }
@@ -2113,22 +2673,33 @@ if (!function_exists('channel_bridge_now')) {
       throw new RuntimeException((string)($valid['error'] ?? channel_bridge_t('channel_bridge.error_validation')));
     }
     $data = (array)$valid['data'];
+    $routesHasBlacklistDomains = channel_bridge_schema_column_exists($pdo, CHANNEL_BRIDGE_TABLE_ROUTES, 'blacklist_domains');
+    if (!$routesHasBlacklistDomains && trim((string)($data['blacklist_domains'] ?? '')) !== '') {
+      throw new RuntimeException(channel_bridge_t('channel_bridge.error_route_blacklist_schema_missing'));
+    }
+
+    $set = [
+      "title = :title",
+      "source_platform = :source_platform",
+      "source_chat_id = :source_chat_id",
+      "target_platform = :target_platform",
+      "target_chat_id = :target_chat_id",
+      "target_extra = :target_extra",
+    ];
+    if ($routesHasBlacklistDomains) {
+      $set[] = "blacklist_domains = :blacklist_domains";
+    }
+    $set[] = "enabled = :enabled";
 
     $st = $pdo->prepare("
       UPDATE " . CHANNEL_BRIDGE_TABLE_ROUTES . "
       SET
-        title = :title,
-        source_platform = :source_platform,
-        source_chat_id = :source_chat_id,
-        target_platform = :target_platform,
-        target_chat_id = :target_chat_id,
-        target_extra = :target_extra,
-        enabled = :enabled
+        " . implode(",\n        ", $set) . "
       WHERE id = :id
       LIMIT 1
     ");
 
-    return $st->execute([
+    $params = [
       ':id' => $id,
       ':title' => (string)$data['title'],
       ':source_platform' => (string)$data['source_platform'],
@@ -2137,7 +2708,12 @@ if (!function_exists('channel_bridge_now')) {
       ':target_chat_id' => (string)$data['target_chat_id'],
       ':target_extra' => (string)$data['target_extra'],
       ':enabled' => (int)$data['enabled'],
-    ]);
+    ];
+    if ($routesHasBlacklistDomains) {
+      $params[':blacklist_domains'] = (string)($data['blacklist_domains'] ?? '');
+    }
+
+    return $st->execute($params);
   }
 
   /**
@@ -2922,18 +3498,10 @@ if (!function_exists('channel_bridge_now')) {
       return ['ok' => false, 'error' => 'MAX_CHAT_ID_EMPTY'];
     }
 
-    $text = channel_bridge_max_plain_text($text);
-
-    $hiddenUrls = [];
-    if (isset($sourceMeta['tg_text_link_urls']) && is_array($sourceMeta['tg_text_link_urls'])) {
-      foreach ($sourceMeta['tg_text_link_urls'] as $u) {
-        $u = trim((string)$u);
-        if ($u !== '') $hiddenUrls[$u] = true;
-      }
-    }
-    if ($hiddenUrls) {
-      $text = channel_bridge_append_missing_urls($text, array_keys($hiddenUrls));
-    }
+    $maxHtmlText = trim((string)($sourceMeta['max_text_html'] ?? ''));
+    $preparedText = channel_bridge_max_prepare_text(($maxHtmlText !== '') ? $maxHtmlText : $text);
+    $text = channel_bridge_normalize_text((string)($preparedText['text'] ?? ''));
+    $markdownNeeded = ((int)($preparedText['markdown'] ?? 0) === 1) ? 1 : 0;
 
     $quoteApplied = 0;
     $quoted = channel_bridge_max_apply_repost_quote($text);
@@ -2969,7 +3537,7 @@ if (!function_exists('channel_bridge_now')) {
       }
     }
 
-    if ($quoteApplied === 1 && !isset($payload['format'])) {
+    if (($quoteApplied === 1 || $markdownNeeded === 1) && !isset($payload['format'])) {
       $payload['format'] = 'markdown';
     }
 
@@ -3124,6 +3692,11 @@ if (!function_exists('channel_bridge_now')) {
       return [];
     }
 
+    $routesHasBlacklistDomains = channel_bridge_schema_column_exists($pdo, CHANNEL_BRIDGE_TABLE_ROUTES, 'blacklist_domains');
+    $blacklistSelect = $routesHasBlacklistDomains
+      ? "blacklist_domains,"
+      : "'' AS blacklist_domains,";
+
     $st = $pdo->prepare("
       SELECT
         id,
@@ -3133,6 +3706,7 @@ if (!function_exists('channel_bridge_now')) {
         target_platform,
         target_chat_id,
         target_extra,
+        $blacklistSelect
         enabled
       FROM " . CHANNEL_BRIDGE_TABLE_ROUTES . "
       WHERE enabled = 1
@@ -3285,7 +3859,9 @@ if (!function_exists('channel_bridge_now')) {
     $targets = count($routes);
     $sent = 0;
     $failed = 0;
+    $skipped = 0;
     $dispatchText = $messageText;
+    $dispatchMaxHtml = trim((string)($payload['tg_text_html'] ?? ''));
     $repostSourceUrl = '';
     if ($sourcePlatform === CHANNEL_BRIDGE_SOURCE_TG) {
       $repostSourceUrl = channel_bridge_tg_post_url_from_meta([
@@ -3300,12 +3876,43 @@ if (!function_exists('channel_bridge_now')) {
     if ($linkRules) {
       $suffixApply = channel_bridge_apply_link_suffix_rules($dispatchText, $linkRules, $repostSourceUrl);
       $dispatchText = channel_bridge_normalize_text((string)($suffixApply['text'] ?? $dispatchText));
+      if ($dispatchMaxHtml !== '') {
+        $suffixApplyHtml = channel_bridge_apply_link_suffix_rules($dispatchMaxHtml, $linkRules, $repostSourceUrl);
+        $dispatchMaxHtml = trim((string)($suffixApplyHtml['text'] ?? $dispatchMaxHtml));
+      }
     }
 
     foreach ($routes as $route) {
       $routeId = (int)($route['id'] ?? 0);
       $targetPlatform = channel_bridge_norm_platform((string)($route['target_platform'] ?? ''));
       $targetChatId = channel_bridge_norm_chat_id((string)($route['target_chat_id'] ?? ''));
+      $blacklistMatch = channel_bridge_route_blacklist_match(
+        (string)($route['blacklist_domains'] ?? ''),
+        $messageText,
+        (array)($payload['tg_text_link_urls'] ?? [])
+      );
+      if (($blacklistMatch['blocked'] ?? false) === true) {
+        $skipped++;
+
+        channel_bridge_log_dispatch($pdo, [
+          'route_id' => $routeId,
+          'source_platform' => $sourcePlatform,
+          'source_chat_id' => $sourceChatId,
+          'source_message_id' => $sourceMessageId,
+          'target_platform' => $targetPlatform,
+          'target_chat_id' => $targetChatId,
+          'message_text' => $dispatchText,
+          'send_status' => 'skipped',
+          'error_text' => 'blocked_domain: ' . implode(', ', (array)($blacklistMatch['matched_domains'] ?? [])),
+          'response_raw' => json_encode([
+            'reason' => 'blocked_domain',
+            'matched_domains' => (array)($blacklistMatch['matched_domains'] ?? []),
+            'post_domains' => (array)($blacklistMatch['post_domains'] ?? []),
+          ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+        ]);
+
+        continue;
+      }
 
       $send = channel_bridge_send_by_route($settings, $route, $dispatchText, [
         'source_platform' => $sourcePlatform,
@@ -3316,6 +3923,7 @@ if (!function_exists('channel_bridge_now')) {
         'tg_photo_file_ids' => (array)($payload['tg_photo_file_ids'] ?? []),
         'tg_photo_file_id' => trim((string)($payload['tg_photo_file_id'] ?? '')),
         'tg_text_link_urls' => (array)($payload['tg_text_link_urls'] ?? []),
+        'max_text_html' => $dispatchMaxHtml,
         'tg_public_post_url' => (string)($payload['tg_public_post_url'] ?? ''),
         'tg_chat_username' => (string)($payload['tg_chat_username'] ?? ''),
       ]);
@@ -3342,6 +3950,7 @@ if (!function_exists('channel_bridge_now')) {
       'targets' => $targets,
       'sent' => $sent,
       'failed' => $failed,
+      'skipped' => $skipped,
       'inbox_id' => $inboxId,
     ];
   }
@@ -3365,11 +3974,14 @@ if (!function_exists('channel_bridge_now')) {
     if (!$msg) return [];
 
     $chat = (array)($msg['chat'] ?? []);
-    $text = trim((string)($msg['text'] ?? ''));
-    if ($text === '') {
-      $text = trim((string)($msg['caption'] ?? ''));
+    $textRaw = trim((string)($msg['text'] ?? ''));
+    $textEntities = $msg['entities'] ?? [];
+    if ($textRaw === '') {
+      $textRaw = trim((string)($msg['caption'] ?? ''));
+      $textEntities = $msg['caption_entities'] ?? [];
     }
-    $text = channel_bridge_normalize_text($text);
+    $text = channel_bridge_normalize_text($textRaw);
+    $textHtml = channel_bridge_tg_text_links_html($textRaw, $textEntities);
 
     $extraUrls = array_merge(
       channel_bridge_tg_text_link_urls($msg['entities'] ?? []),
@@ -3382,15 +3994,8 @@ if (!function_exists('channel_bridge_now')) {
     $extraUrls = array_values(array_unique(array_filter(array_map('trim', $extraUrls), static function ($v) {
       return $v !== '';
     })));
-    $text = channel_bridge_append_missing_urls($text, $extraUrls);
 
     $publicUrl = channel_bridge_tg_message_public_url($msg);
-    $hasUrlInText = (preg_match('~https?://~iu', $text) === 1);
-    if (!$hasUrlInText && channel_bridge_tg_message_has_media($msg)) {
-      if ($publicUrl !== '') {
-        $text = channel_bridge_append_missing_urls($text, [$publicUrl]);
-      }
-    }
 
     $bestPhotoFileId = channel_bridge_tg_best_photo_file_id($msg);
     $mediaGroupId = trim((string)($msg['media_group_id'] ?? ''));
@@ -3401,6 +4006,7 @@ if (!function_exists('channel_bridge_now')) {
       'source_chat_id' => trim((string)($chat['id'] ?? '')),
       'source_message_id' => $messageId,
       'message_text' => $text,
+      'tg_text_html' => $textHtml,
       'tg_media_group_id' => $mediaGroupId,
       'tg_media_group_message_ids' => ($messageId !== '' ? [$messageId] : []),
       'tg_photo_file_ids' => ($bestPhotoFileId !== '' ? [$bestPhotoFileId] : []),

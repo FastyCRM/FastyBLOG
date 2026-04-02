@@ -39,6 +39,7 @@ try {
     'target_platform' => (string)($_POST['target_platform'] ?? ''),
     'target_chat_id' => (string)($_POST['target_chat_id'] ?? ''),
     'target_extra' => (string)($_POST['target_extra'] ?? ''),
+    'blacklist_domains' => (string)($_POST['blacklist_domains'] ?? ''),
     'enabled' => (int)($_POST['enabled'] ?? 0),
     'auto_bind_source' => $autoBindSource,
     'auto_bind_target' => $autoBindTarget,

@@ -42,6 +42,7 @@ try {
     'target_platform' => (string)($_POST['target_platform'] ?? ''),
     'target_chat_id' => (string)($_POST['target_chat_id'] ?? ''),
     'target_extra' => (string)($_POST['target_extra'] ?? ''),
+    'blacklist_domains' => (string)($_POST['blacklist_domains'] ?? ''),
     'enabled' => (int)($_POST['enabled'] ?? 0),
   ]);
 
@@ -60,4 +61,3 @@ try {
 }
 
 redirect_return('/adm/index.php?m=' . CHANNEL_BRIDGE_MODULE_CODE);
-

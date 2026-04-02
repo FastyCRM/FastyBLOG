@@ -144,6 +144,90 @@
     box.innerHTML = html;
   }
 
+  function cb_render_route_tg_probe(box, data, labels) {
+    if (!box) return;
+    if (!data) {
+      box.innerHTML = '<div class="muted">No data</div>';
+      return;
+    }
+
+    var chats = data.chats || {};
+    var rows = Array.isArray(chats.items) ? chats.items : [];
+    var sourceLabel = cb_esc((labels && labels.source) ? labels.source : 'To source');
+    var targetLabel = cb_esc((labels && labels.target) ? labels.target : 'To target');
+
+    var html = '';
+    html += '<div class="muted">known=' + cb_esc(chats.known_count || 0) + ', resolved=' + cb_esc(chats.resolved_count || 0) + ', errors=' + cb_esc(chats.errors_count || 0) + '</div>';
+
+    if (!rows.length) {
+      html += '<div class="muted" style="margin-top:8px;">Chats list is empty</div>';
+      box.innerHTML = html;
+      return;
+    }
+
+    html += '<table class="table" style="margin-top:8px;">';
+    html += '<thead><tr><th>chat_id</th><th>title</th><th>username</th><th>type</th><th></th></tr></thead><tbody>';
+    rows.forEach(function (row) {
+      var cid = cb_esc(row.chat_id || '');
+      var username = cb_esc(row.username || '');
+      var link = cb_esc(row.link || '');
+
+      html += '<tr>';
+      html += '<td class="mono">' + cid + '</td>';
+      html += '<td>' + cb_esc(row.title || '') + '</td>';
+      html += '<td>' + (username ? (link ? ('<a href="' + link + '" target="_blank" rel="noopener noreferrer">@' + username + '</a>') : ('@' + username)) : '') + '</td>';
+      html += '<td>' + cb_esc(row.type || '') + '</td>';
+      html += '<td class="t-right">';
+      html += '<button class="btn" type="button" data-cb-fill-chat-id="source_chat_id" data-cb-fill-chat-value="' + cid + '">' + sourceLabel + '</button> ';
+      html += '<button class="btn" type="button" data-cb-fill-chat-id="target_chat_id" data-cb-fill-chat-value="' + cid + '">' + targetLabel + '</button>';
+      html += '</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+
+    box.innerHTML = html;
+  }
+
+  function cb_render_route_max_probe(box, data, labels) {
+    if (!box) return;
+    if (!data) {
+      box.innerHTML = '<div class="muted">No data</div>';
+      return;
+    }
+
+    var chats = data.chats || {};
+    var rows = Array.isArray(chats.items) ? chats.items : [];
+    var targetLabel = cb_esc((labels && labels.target) ? labels.target : 'To target');
+
+    var html = '';
+    html += '<div class="muted">count=' + cb_esc(chats.count || 0) + ', http=' + cb_esc(chats.http_code || 0) + ', error=' + cb_esc(chats.error || '') + '</div>';
+
+    if (!rows.length) {
+      html += '<div class="muted" style="margin-top:8px;">Chats list is empty</div>';
+      box.innerHTML = html;
+      return;
+    }
+
+    html += '<table class="table" style="margin-top:8px;">';
+    html += '<thead><tr><th>chat_id</th><th>title</th><th>type</th><th>status</th><th></th></tr></thead><tbody>';
+    rows.forEach(function (row) {
+      var cid = cb_esc(row.chat_id || '');
+
+      html += '<tr>';
+      html += '<td class="mono">' + cid + '</td>';
+      html += '<td>' + cb_esc(row.title || '') + '</td>';
+      html += '<td>' + cb_esc(row.type || '') + '</td>';
+      html += '<td>' + cb_esc(row.status || '') + '</td>';
+      html += '<td class="t-right">';
+      html += '<button class="btn" type="button" data-cb-fill-chat-id="target_chat_id" data-cb-fill-chat-value="' + cid + '">' + targetLabel + '</button>';
+      html += '</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+
+    box.innerHTML = html;
+  }
+
   function cb_probe_tg(btn) {
     if (!btn) return;
     var url = (btn.getAttribute('data-cb-tg-probe-url') || '').trim();
@@ -172,6 +256,79 @@
           return;
         }
         cb_render_tg_probe(box, payload.data);
+      })
+      .catch(function (e) {
+        box.innerHTML = '<div class="muted">' + cb_esc((e && e.message) ? e.message : 'Request failed') + '</div>';
+      });
+  }
+
+  function cb_probe_route_tg(btn) {
+    if (!btn) return;
+    var url = (btn.getAttribute('data-cb-tg-probe-url') || '').trim();
+    var csrf = (btn.getAttribute('data-csrf') || '').trim();
+    if (!url || !csrf) return;
+
+    var root = btn.closest('.card__body') || document;
+    var box = root.querySelector('[data-cb-route-tg-probe-result="1"]');
+    if (!box) return;
+
+    box.innerHTML = '<div class="muted">Loading...</div>';
+
+    fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+      },
+      body: 'csrf=' + encodeURIComponent(csrf)
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (payload) {
+        if (!payload || payload.ok !== true || !payload.data) {
+          var err = (payload && (payload.msg || payload.message || payload.error)) ? String(payload.msg || payload.message || payload.error) : 'Request failed';
+          box.innerHTML = '<div class="muted">' + cb_esc(err) + '</div>';
+          return;
+        }
+        cb_render_route_tg_probe(box, payload.data, {
+          source: (btn.getAttribute('data-cb-pick-source-label') || '').trim(),
+          target: (btn.getAttribute('data-cb-pick-target-label') || '').trim()
+        });
+      })
+      .catch(function (e) {
+        box.innerHTML = '<div class="muted">' + cb_esc((e && e.message) ? e.message : 'Request failed') + '</div>';
+      });
+  }
+
+  function cb_probe_route_max(btn) {
+    if (!btn) return;
+    var url = (btn.getAttribute('data-cb-max-probe-url') || '').trim();
+    var csrf = (btn.getAttribute('data-csrf') || '').trim();
+    if (!url || !csrf) return;
+
+    var root = btn.closest('.card__body') || document;
+    var box = root.querySelector('[data-cb-route-max-probe-result="1"]');
+    if (!box) return;
+
+    box.innerHTML = '<div class="muted">Loading...</div>';
+
+    fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+      },
+      body: 'csrf=' + encodeURIComponent(csrf)
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (payload) {
+        if (!payload || payload.ok !== true || !payload.data) {
+          var err = (payload && (payload.msg || payload.message || payload.error)) ? String(payload.msg || payload.message || payload.error) : 'Request failed';
+          box.innerHTML = '<div class="muted">' + cb_esc(err) + '</div>';
+          return;
+        }
+        cb_render_route_max_probe(box, payload.data, {
+          target: (btn.getAttribute('data-cb-pick-target-label') || '').trim()
+        });
       })
       .catch(function (e) {
         box.innerHTML = '<div class="muted">' + cb_esc((e && e.message) ? e.message : 'Request failed') + '</div>';
@@ -277,6 +434,20 @@
       return;
     }
 
+    var routeTgProbeBtn = target.closest('[data-cb-route-tg-probe="1"]');
+    if (routeTgProbeBtn) {
+      e.preventDefault();
+      cb_probe_route_tg(routeTgProbeBtn);
+      return;
+    }
+
+    var routeMaxProbeBtn = target.closest('[data-cb-route-max-probe="1"]');
+    if (routeMaxProbeBtn) {
+      e.preventDefault();
+      cb_probe_route_max(routeMaxProbeBtn);
+      return;
+    }
+
     var probeBtn = target.closest('[data-cb-max-probe="1"]');
     if (probeBtn) {
       e.preventDefault();
@@ -292,6 +463,22 @@
       if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
         navigator.clipboard.writeText(value).catch(function () {});
       }
+      return;
+    }
+
+    var fillChatBtn = target.closest('[data-cb-fill-chat-id]');
+    if (fillChatBtn) {
+      e.preventDefault();
+      var inputName = (fillChatBtn.getAttribute('data-cb-fill-chat-id') || '').trim();
+      var inputValue = (fillChatBtn.getAttribute('data-cb-fill-chat-value') || '').trim();
+      if (!inputName || !inputValue) return;
+
+      var modalRoot = fillChatBtn.closest('form') || document;
+      var input = modalRoot.querySelector('[name="' + inputName + '"]');
+      if (!input) return;
+      input.value = inputValue;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
       return;
     }
 

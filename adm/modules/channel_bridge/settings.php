@@ -54,6 +54,26 @@ const CHANNEL_BRIDGE_TABLE_BIND_TOKENS = 'channel_bridge_bind_tokens';
 const CHANNEL_BRIDGE_TABLE_LINK_SUFFIX_RULES = 'channel_bridge_link_suffix_rules';
 
 /**
+ * CHANNEL_BRIDGE_TABLE_WEBHOOK_UPDATES
+ * Таблица обработанных входящих update_id Telegram webhook.
+ */
+const CHANNEL_BRIDGE_TABLE_WEBHOOK_UPDATES = 'channel_bridge_webhook_updates';
+
+/**
+ * CHANNEL_BRIDGE_REQUIRED_TABLES
+ * Обязательные таблицы модуля для текущего рантайма.
+ * Дополнительные таблицы могут доезжать отдельным update.sql без падения webhook.
+ */
+const CHANNEL_BRIDGE_REQUIRED_TABLES = [
+  CHANNEL_BRIDGE_TABLE_SETTINGS,
+  CHANNEL_BRIDGE_TABLE_ROUTES,
+  CHANNEL_BRIDGE_TABLE_INBOX,
+  CHANNEL_BRIDGE_TABLE_DISPATCH_LOG,
+  CHANNEL_BRIDGE_TABLE_BIND_TOKENS,
+  CHANNEL_BRIDGE_TABLE_LINK_SUFFIX_RULES,
+];
+
+/**
  * CHANNEL_BRIDGE_TABLES
  * Полный список таблиц модуля для do=install_db.
  */
@@ -64,6 +84,7 @@ const CHANNEL_BRIDGE_TABLES = [
   CHANNEL_BRIDGE_TABLE_DISPATCH_LOG,
   CHANNEL_BRIDGE_TABLE_BIND_TOKENS,
   CHANNEL_BRIDGE_TABLE_LINK_SUFFIX_RULES,
+  CHANNEL_BRIDGE_TABLE_WEBHOOK_UPDATES,
 ];
 
 /**
@@ -131,3 +152,9 @@ const CHANNEL_BRIDGE_BIND_SIDE_TARGET = 'target';
  * Время жизни одноразового кода привязки в минутах.
  */
 const CHANNEL_BRIDGE_BIND_CODE_TTL_MINUTES = 30;
+
+/**
+ * CHANNEL_BRIDGE_TG_UPDATE_MAX_AGE_SECONDS
+ * Максимальный допустимый возраст channel_post для автокросспоста.
+ */
+const CHANNEL_BRIDGE_TG_UPDATE_MAX_AGE_SECONDS = 86400;

@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS `channel_bridge_routes` (
   `target_platform` VARCHAR(20) NOT NULL,
   `target_chat_id` VARCHAR(191) NOT NULL,
   `target_extra` TEXT NOT NULL,
+  `blacklist_domains` TEXT NOT NULL,
   `enabled` TINYINT(1) NOT NULL DEFAULT 1,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
@@ -104,6 +105,22 @@ CREATE TABLE IF NOT EXISTS `channel_bridge_link_suffix_rules` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_domain_root` (`domain_root`),
   KEY `idx_enabled_sort` (`enabled`, `sort`, `id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS `channel_bridge_webhook_updates` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `update_id` BIGINT UNSIGNED NOT NULL,
+  `update_type` VARCHAR(32) NOT NULL DEFAULT '',
+  `source_chat_id` VARCHAR(191) NOT NULL DEFAULT '',
+  `source_message_id` VARCHAR(128) NOT NULL DEFAULT '',
+  `media_group_id` VARCHAR(128) NOT NULL DEFAULT '',
+  `message_date` DATETIME NULL DEFAULT NULL,
+  `edit_date` DATETIME NULL DEFAULT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_update_id` (`update_id`),
+  KEY `idx_created_at` (`created_at`),
+  KEY `idx_source` (`source_chat_id`, `source_message_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 INSERT INTO `channel_bridge_settings`

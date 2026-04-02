@@ -257,6 +257,40 @@ try {
     json_ok(['ok' => true, 'handled' => false, 'reason' => 'empty_update']);
   }
 
+  $updateMeta = channel_bridge_extract_tg_update_meta($update);
+  if ($updateMeta) {
+    $updateReg = channel_bridge_webhook_update_register($pdo, $updateMeta);
+    if (($updateReg['duplicate'] ?? false) === true) {
+      audit_log(CHANNEL_BRIDGE_MODULE_CODE, 'api_tg_webhook', 'info', array_merge(
+        ['stage' => 'ignored'],
+        channel_bridge_tg_update_audit_payload($updateMeta, 'duplicate_update')
+      ));
+      json_ok(['ok' => true, 'handled' => false, 'reason' => 'duplicate_update']);
+    }
+
+    $updateType = trim((string)($updateMeta['update_type'] ?? ''));
+    if ($updateType === 'edited_channel_post') {
+      audit_log(CHANNEL_BRIDGE_MODULE_CODE, 'api_tg_webhook', 'info', array_merge(
+        ['stage' => 'ignored'],
+        channel_bridge_tg_update_audit_payload($updateMeta, 'edited_channel_post_ignored')
+      ));
+      json_ok(['ok' => true, 'handled' => false, 'reason' => 'edited_channel_post_ignored']);
+    }
+
+    if (channel_bridge_is_tg_update_stale($updateMeta)) {
+      $messageTs = (int)($updateMeta['message_date_ts'] ?? 0);
+      $ageSeconds = ($messageTs > 0) ? max(0, time() - $messageTs) : 0;
+      audit_log(CHANNEL_BRIDGE_MODULE_CODE, 'api_tg_webhook', 'warn', array_merge(
+        ['stage' => 'ignored'],
+        channel_bridge_tg_update_audit_payload($updateMeta, 'stale_update_ignored', [
+          'age_seconds' => $ageSeconds,
+          'max_age_seconds' => CHANNEL_BRIDGE_TG_UPDATE_MAX_AGE_SECONDS,
+        ])
+      ));
+      json_ok(['ok' => true, 'handled' => false, 'reason' => 'stale_update_ignored']);
+    }
+  }
+
   $textMeta = channel_bridge_extract_tg_text_meta($update);
   if ($textMeta) {
     $chatType = strtolower(trim((string)($textMeta['chat_type'] ?? '')));
