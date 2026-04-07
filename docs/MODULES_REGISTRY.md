@@ -33,6 +33,7 @@
 | oauth_tokens | OAuth токены | 1 | 1 | admin, user | 0 |
 | ym_link_bot | YM Link Bot | 1 | 1 | admin, manager, user | 0 |
 | bot_adv_calendar | Bot Adv Calendar | 1 | 1 | admin, manager | 1 |
+| promobot | Промобот | 1 | 1 | admin, manager, user | 0 |
 | channel_bridge | Channel Bridge | — | — | — | — |
 
 > `roles` — из `modules.roles` (JSON). `has_settings` означает, что настройки есть и открываются через шестерню (modal_settings).
@@ -208,6 +209,22 @@
 - отдельный webhook файла модуля;
 - первая кнопка в Telegram: `Календарь рекламы`;
 - без добавления новых статусов заявок (используются существующие статусы CRM).
+
+### promobot
+**Назначение:** выдача промокодов в чатах по ключевым словам (Telegram/MAX).
+**Файлы:**
+- VIEW: `adm/modules/promobot/promobot.php`
+- settings: `adm/modules/promobot/settings.php`
+- router: `adm/modules/promobot/assets/php/main.php`
+- webhooks: `adm/modules/promobot/webhook.php`, `adm/modules/promobot/max_webhook.php`
+- actions/modals: `promobot_bot_*`, `promobot_promo_*`, `promobot_user_*`, `promobot_channel_*`
+- libs: `promobot_lib.php`
+- SQL: `adm/modules/promobot/install.sql`
+**Core-зависимости:** `db`, `acl_guard`, `csrf_*`, `audit_log`, `json_ok/json_err`, `telegram.php`.
+**Фишки:**
+- отдельные боты TG/MAX, привязка чатов через `/bind CODE`;
+- поиск по подстроке в сообщениях и выдача текста ответа;
+- ролевая модель доступа к ботам через таблицу `promobot_user_access`.
 
 ### channel_bridge
 **Назначение:** модуль маршрутизации сообщений между платформами (TG/VK/MAX) с правилами и журналированием.
