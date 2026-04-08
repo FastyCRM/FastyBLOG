@@ -127,6 +127,16 @@ $dataCardClass = 'l-col l-col--12';
           </label>
 
           <label class="field field--stack">
+            <span class="field__label">Use Yandex Market API link</span>
+            <input type="checkbox" name="partner_mode_enabled" value="1" <?= ((int)($settings['partner_mode_enabled'] ?? 1) === 1) ? 'checked' : '' ?>>
+          </label>
+
+          <label class="field field--stack">
+            <span class="field__label">Use manual fallback link</span>
+            <input type="checkbox" name="manual_mode_enabled" value="1" <?= ((int)($settings['manual_mode_enabled'] ?? 1) === 1) ? 'checked' : '' ?>>
+          </label>
+
+          <label class="field field--stack">
             <span class="field__label">Geo ID</span>
             <input class="input" type="number" name="geo_id" min="1" value="<?= (int)$settings['geo_id'] ?>">
           </label>

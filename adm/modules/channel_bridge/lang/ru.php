@@ -94,8 +94,8 @@ return [
   'channel_bridge.field_target_chat_id' => 'Цель (chat/channel id)',
   'channel_bridge.field_auto_bind_target' => 'Автопривязка цели по коду (только TG-цель)',
   'channel_bridge.field_target_extra' => 'Доп. параметры цели (JSON)',
-  'channel_bridge.field_blacklist_domains' => 'Чёрный список доменов',
-  'channel_bridge.field_blacklist_domains_hint' => 'Если в посте есть ссылка на один из этих доменов, маршрут пропускается. По одному домену на строку или через запятую.',
+  'channel_bridge.field_blacklist_domains' => 'Чёрный список подстрок',
+  'channel_bridge.field_blacklist_domains_hint' => 'Если любая ссылка поста содержит одну из этих подстрок, маршрут пропускается. По одной подстроке на строку или через запятую.',
   'channel_bridge.field_route_enabled' => 'Маршрут активен',
 
   'channel_bridge.btn_settings' => 'Настройки',

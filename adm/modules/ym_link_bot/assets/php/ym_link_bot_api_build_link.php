@@ -141,28 +141,12 @@ try {
     $clid = trim((string)($site['clid'] ?? ''));
     if ($clid === '') continue;
 
-    $baseLink = $manualClean;
-    $linkMode = 'fallback_manual';
-    $partnerReason = '';
-    if ($affiliateApiKey === '') {
-      $partnerReason = 'affiliate_api_key_empty';
-    } else {
-      $partner = ymlb_affiliate_partner_link_create($url2, $affiliateApiKey, $clid);
-      if (!is_array($partner)) {
-        $partnerReason = 'partner_not_created';
-      } else {
-        $partnerUrl = trim((string)($partner['url'] ?? ''));
-        if ($partnerUrl !== '' && ymlb_is_market_url($partnerUrl)) {
-          $baseLink = $partnerUrl;
-          $linkMode = 'partner_url3';
-          $partnerReason = 'ok';
-        } else {
-          $partnerReason = 'partner_url_invalid';
-        }
-      }
-    }
+    $route = ymlb_select_link_route($url2, $manualClean, $affiliateApiKey, $clid, $settings);
+    $baseLink = (string)($route['base_link'] ?? '');
+    $linkMode = (string)($route['link_mode'] ?? 'not_built');
+    $partnerReason = (string)($route['partner_reason'] ?? '');
 
-    ymlb_stage_log('api_build_link', ($linkMode === 'partner_url3' ? 'info' : 'warn'), [
+    ymlb_stage_log('api_build_link', ((int)($route['can_build'] ?? 0) === 1 ? ($linkMode === 'partner_url3' ? 'info' : 'warn') : 'error'), [
       'stage' => 'partner_link',
       'binding_id' => $bindingId,
       'site_id' => (int)($site['id'] ?? 0),
@@ -173,6 +157,9 @@ try {
       'url2_clean' => $url2,
       'manual_clean_url' => $manualClean,
     ]);
+    if ((int)($route['can_build'] ?? 0) !== 1) {
+      continue;
+    }
 
     $erid = null;
     if ($ordEnabled) {
@@ -220,6 +207,13 @@ try {
   }
 
   if (!$links) {
+    ymlb_stage_log('api_build_link', 'error', [
+      'stage' => 'done',
+      'binding_id' => $bindingId,
+      'reason' => 'links_not_built',
+      'partner_mode_enabled' => (int)($settings['partner_mode_enabled'] ?? 1),
+      'manual_mode_enabled' => (int)($settings['manual_mode_enabled'] ?? 1),
+    ]);
     json_err('links_not_built', 400);
   }
 

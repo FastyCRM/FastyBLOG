@@ -1412,7 +1412,7 @@ if (!function_exists('channel_bridge_now')) {
 
   /**
    * channel_bridge_route_blacklist_domains_parse()
-   * Разбирает чёрный список доменов маршрута в нормализованный массив.
+   * Разбирает чёрный список маршрута в нормализованный массив подстрок.
    *
    * @param string $value
    * @return array<int,string>
@@ -1427,9 +1427,14 @@ if (!function_exists('channel_bridge_now')) {
 
     $out = [];
     foreach ($parts as $part) {
-      $domain = channel_bridge_link_rule_normalize_domain_root((string)$part);
-      if ($domain === '') continue;
-      $out[$domain] = true;
+      $rule = trim(channel_bridge_to_utf8((string)$part));
+      if ($rule === '') continue;
+      if (function_exists('mb_strtolower')) {
+        $rule = mb_strtolower($rule, 'UTF-8');
+      } else {
+        $rule = strtolower($rule);
+      }
+      $out[$rule] = true;
     }
 
     return array_keys($out);
@@ -1437,7 +1442,7 @@ if (!function_exists('channel_bridge_now')) {
 
   /**
    * channel_bridge_route_blacklist_domains_normalize()
-   * Нормализует чёрный список доменов маршрута для хранения в БД.
+   * Нормализует чёрный список маршрута для хранения в БД.
    *
    * @param string $value
    * @return string
@@ -1495,18 +1500,18 @@ if (!function_exists('channel_bridge_now')) {
 
   /**
    * channel_bridge_route_blacklist_match()
-   * Проверяет, должен ли маршрут быть пропущен по доменным ссылкам в посте.
+   * Проверяет, должен ли маршрут быть пропущен по подстрокам в ссылках поста.
    *
    * @param string $blacklistDomains
    * @param string $text
    * @param array<int,string> $extraUrls
-   * @return array{blocked:bool,matched_domains:array<int,string>,post_domains:array<int,string>}
+   * @return array{blocked:bool,matched_rules:array<int,string>,post_urls:array<int,string>}
    */
   function channel_bridge_route_blacklist_match(string $blacklistDomains, string $text, array $extraUrls = []): array
   {
-    $blockedDomains = channel_bridge_route_blacklist_domains_parse($blacklistDomains);
-    if (!$blockedDomains) {
-      return ['blocked' => false, 'matched_domains' => [], 'post_domains' => []];
+    $blockedRules = channel_bridge_route_blacklist_domains_parse($blacklistDomains);
+    if (!$blockedRules) {
+      return ['blocked' => false, 'matched_rules' => [], 'post_urls' => []];
     }
 
     $rawUrls = channel_bridge_extract_urls_from_text($text);
@@ -1516,31 +1521,38 @@ if (!function_exists('channel_bridge_now')) {
       $rawUrls[] = $url;
     }
     if (!$rawUrls) {
-      return ['blocked' => false, 'matched_domains' => [], 'post_domains' => []];
+      return ['blocked' => false, 'matched_rules' => [], 'post_urls' => []];
     }
 
-    $postDomainsMap = [];
+    $postUrlsMap = [];
     foreach ($rawUrls as $url) {
-      $domain = channel_bridge_url_domain_normalize((string)$url);
-      if ($domain === '') continue;
-      $postDomainsMap[$domain] = true;
+      $url = trim(channel_bridge_to_utf8((string)$url));
+      if ($url === '') continue;
+      $postUrlsMap[$url] = true;
     }
-    if (!$postDomainsMap) {
-      return ['blocked' => false, 'matched_domains' => [], 'post_domains' => []];
+    if (!$postUrlsMap) {
+      return ['blocked' => false, 'matched_rules' => [], 'post_urls' => []];
     }
 
     $matchedMap = [];
-    foreach (array_keys($postDomainsMap) as $postDomain) {
-      foreach ($blockedDomains as $ruleDomain) {
-        if (!channel_bridge_domain_matches_rule($postDomain, $ruleDomain)) continue;
-        $matchedMap[$ruleDomain] = true;
+    foreach (array_keys($postUrlsMap) as $postUrl) {
+      $postUrlLower = function_exists('mb_strtolower')
+        ? mb_strtolower($postUrl, 'UTF-8')
+        : strtolower($postUrl);
+
+      foreach ($blockedRules as $rule) {
+        $matched = function_exists('mb_strpos')
+          ? (mb_strpos($postUrlLower, $rule, 0, 'UTF-8') !== false)
+          : (strpos($postUrlLower, $rule) !== false);
+        if (!$matched) continue;
+        $matchedMap[$rule] = true;
       }
     }
 
     return [
       'blocked' => !empty($matchedMap),
-      'matched_domains' => array_keys($matchedMap),
-      'post_domains' => array_keys($postDomainsMap),
+      'matched_rules' => array_keys($matchedMap),
+      'post_urls' => array_keys($postUrlsMap),
     ];
   }
 
@@ -3934,11 +3946,11 @@ if (!function_exists('channel_bridge_now')) {
           'target_chat_id' => $targetChatId,
           'message_text' => $dispatchText,
           'send_status' => 'skipped',
-          'error_text' => 'blocked_domain: ' . implode(', ', (array)($blacklistMatch['matched_domains'] ?? [])),
+          'error_text' => 'blocked_substring: ' . implode(', ', (array)($blacklistMatch['matched_rules'] ?? [])),
           'response_raw' => json_encode([
-            'reason' => 'blocked_domain',
-            'matched_domains' => (array)($blacklistMatch['matched_domains'] ?? []),
-            'post_domains' => (array)($blacklistMatch['post_domains'] ?? []),
+            'reason' => 'blocked_substring',
+            'matched_rules' => (array)($blacklistMatch['matched_rules'] ?? []),
+            'post_urls' => (array)($blacklistMatch['post_urls'] ?? []),
           ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
         ]);
 

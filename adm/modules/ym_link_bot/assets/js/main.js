@@ -306,6 +306,12 @@
       settingsForm.elements.chat_webhook_secret.value = settings.chat_webhook_secret || '';
     }
     settingsForm.elements.affiliate_api_key.value = settings.affiliate_api_key || '';
+    if (settingsForm.elements.partner_mode_enabled) {
+      settingsForm.elements.partner_mode_enabled.checked = Number(settings.partner_mode_enabled || 0) === 1;
+    }
+    if (settingsForm.elements.manual_mode_enabled) {
+      settingsForm.elements.manual_mode_enabled.checked = Number(settings.manual_mode_enabled || 0) === 1;
+    }
     settingsForm.elements.geo_id.value = settings.geo_id || 213;
     settingsForm.elements.link_static_params.value = settings.link_static_params || '';
     settingsForm.elements.listener_path.value = settings.listener_path || '';
@@ -1009,4 +1015,3 @@
 
   refreshBootstrap({ silent: true });
 })();
-

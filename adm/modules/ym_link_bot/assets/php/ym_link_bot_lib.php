@@ -407,6 +407,8 @@ if (!function_exists('ymlb_module_code')) {
       'chat_bot_username' => '',
       'chat_webhook_secret' => '',
       'affiliate_api_key' => '',
+      'partner_mode_enabled' => 1,
+      'manual_mode_enabled' => 1,
       'geo_id' => 213,
       'link_static_params' => 'pp=900&mclid=1003&distr_type=7',
       'listener_path' => ymlb_listener_path_default(),
@@ -445,6 +447,8 @@ if (!function_exists('ymlb_module_code')) {
         chat_bot_username VARCHAR(64) NOT NULL DEFAULT '',
         chat_webhook_secret VARCHAR(128) NOT NULL DEFAULT '',
         affiliate_api_key VARCHAR(255) NOT NULL DEFAULT '',
+        partner_mode_enabled TINYINT UNSIGNED NOT NULL DEFAULT 1,
+        manual_mode_enabled TINYINT UNSIGNED NOT NULL DEFAULT 1,
         geo_id INT UNSIGNED NOT NULL DEFAULT 213,
         link_static_params VARCHAR(255) NOT NULL DEFAULT 'pp=900&mclid=1003&distr_type=7',
         listener_path VARCHAR(255) NOT NULL DEFAULT '',
@@ -489,6 +493,18 @@ if (!function_exists('ymlb_module_code')) {
       $pdo->exec("
         ALTER TABLE {$settings}
         ADD COLUMN chat_listener_path VARCHAR(255) NOT NULL DEFAULT '' AFTER listener_path
+      ");
+    }
+    if (!ymlb_table_column_exists($pdo, ymlb_table('settings'), 'partner_mode_enabled')) {
+      $pdo->exec("
+        ALTER TABLE {$settings}
+        ADD COLUMN partner_mode_enabled TINYINT UNSIGNED NOT NULL DEFAULT 1 AFTER affiliate_api_key
+      ");
+    }
+    if (!ymlb_table_column_exists($pdo, ymlb_table('settings'), 'manual_mode_enabled')) {
+      $pdo->exec("
+        ALTER TABLE {$settings}
+        ADD COLUMN manual_mode_enabled TINYINT UNSIGNED NOT NULL DEFAULT 1 AFTER partner_mode_enabled
       ");
     }
 
@@ -602,9 +618,9 @@ if (!function_exists('ymlb_module_code')) {
     $defaults = ymlb_settings_defaults();
     $stInit = $pdo->prepare("
       INSERT INTO {$settings}
-      (id, enabled, chat_mode_enabled, chat_bot_separate, bot_token, bot_username, webhook_secret, chat_bot_token, chat_bot_username, chat_webhook_secret, affiliate_api_key, geo_id, link_static_params, listener_path, chat_listener_path, created_at, updated_at)
+      (id, enabled, chat_mode_enabled, chat_bot_separate, bot_token, bot_username, webhook_secret, chat_bot_token, chat_bot_username, chat_webhook_secret, affiliate_api_key, partner_mode_enabled, manual_mode_enabled, geo_id, link_static_params, listener_path, chat_listener_path, created_at, updated_at)
       VALUES
-      (1, :enabled, :chat_mode_enabled, :chat_bot_separate, :bot_token, :bot_username, :webhook_secret, :chat_bot_token, :chat_bot_username, :chat_webhook_secret, :affiliate_api_key, :geo_id, :link_static_params, :listener_path, :chat_listener_path, :created_at, :updated_at)
+      (1, :enabled, :chat_mode_enabled, :chat_bot_separate, :bot_token, :bot_username, :webhook_secret, :chat_bot_token, :chat_bot_username, :chat_webhook_secret, :affiliate_api_key, :partner_mode_enabled, :manual_mode_enabled, :geo_id, :link_static_params, :listener_path, :chat_listener_path, :created_at, :updated_at)
       ON DUPLICATE KEY UPDATE
         id = VALUES(id)
     ");
@@ -620,6 +636,8 @@ if (!function_exists('ymlb_module_code')) {
       ':chat_bot_username' => (string)$defaults['chat_bot_username'],
       ':chat_webhook_secret' => (string)$defaults['chat_webhook_secret'],
       ':affiliate_api_key' => (string)$defaults['affiliate_api_key'],
+      ':partner_mode_enabled' => (int)$defaults['partner_mode_enabled'],
+      ':manual_mode_enabled' => (int)$defaults['manual_mode_enabled'],
       ':geo_id' => (int)$defaults['geo_id'],
       ':link_static_params' => (string)$defaults['link_static_params'],
       ':listener_path' => (string)$defaults['listener_path'],
@@ -654,6 +672,8 @@ if (!function_exists('ymlb_module_code')) {
         chat_bot_username,
         chat_webhook_secret,
         affiliate_api_key,
+        partner_mode_enabled,
+        manual_mode_enabled,
         geo_id,
         link_static_params,
         listener_path,
@@ -678,6 +698,8 @@ if (!function_exists('ymlb_module_code')) {
       'chat_bot_username' => ltrim(trim((string)($row['chat_bot_username'] ?? '')), '@'),
       'chat_webhook_secret' => trim((string)($row['chat_webhook_secret'] ?? '')),
       'affiliate_api_key' => trim((string)($row['affiliate_api_key'] ?? '')),
+      'partner_mode_enabled' => ((int)($row['partner_mode_enabled'] ?? 1) === 1) ? 1 : 0,
+      'manual_mode_enabled' => ((int)($row['manual_mode_enabled'] ?? 1) === 1) ? 1 : 0,
       'geo_id' => (int)($row['geo_id'] ?? 213),
       'link_static_params' => trim((string)($row['link_static_params'] ?? '')),
       'listener_path' => trim((string)($row['listener_path'] ?? '')),
@@ -719,6 +741,8 @@ if (!function_exists('ymlb_module_code')) {
     $chatBotUsername = ltrim(trim((string)($input['chat_bot_username'] ?? '')), '@');
     $chatWebhookSecret = trim((string)($input['chat_webhook_secret'] ?? ''));
     $affiliateApiKey = trim((string)($input['affiliate_api_key'] ?? ''));
+    $partnerModeEnabled = ((int)($input['partner_mode_enabled'] ?? 0) === 1) ? 1 : 0;
+    $manualModeEnabled = ((int)($input['manual_mode_enabled'] ?? 0) === 1) ? 1 : 0;
     $geoId = (int)($input['geo_id'] ?? 213);
     $linkStaticParams = trim((string)($input['link_static_params'] ?? ''));
     $listenerPath = trim((string)($input['listener_path'] ?? ''));
@@ -741,9 +765,9 @@ if (!function_exists('ymlb_module_code')) {
 
     $st = $pdo->prepare("
       INSERT INTO {$table}
-      (id, enabled, chat_mode_enabled, chat_bot_separate, bot_token, bot_username, webhook_secret, chat_bot_token, chat_bot_username, chat_webhook_secret, affiliate_api_key, geo_id, link_static_params, listener_path, chat_listener_path, created_at, updated_at)
+      (id, enabled, chat_mode_enabled, chat_bot_separate, bot_token, bot_username, webhook_secret, chat_bot_token, chat_bot_username, chat_webhook_secret, affiliate_api_key, partner_mode_enabled, manual_mode_enabled, geo_id, link_static_params, listener_path, chat_listener_path, created_at, updated_at)
       VALUES
-      (1, :enabled, :chat_mode_enabled, :chat_bot_separate, :bot_token, :bot_username, :webhook_secret, :chat_bot_token, :chat_bot_username, :chat_webhook_secret, :affiliate_api_key, :geo_id, :link_static_params, :listener_path, :chat_listener_path, :created_at, :updated_at)
+      (1, :enabled, :chat_mode_enabled, :chat_bot_separate, :bot_token, :bot_username, :webhook_secret, :chat_bot_token, :chat_bot_username, :chat_webhook_secret, :affiliate_api_key, :partner_mode_enabled, :manual_mode_enabled, :geo_id, :link_static_params, :listener_path, :chat_listener_path, :created_at, :updated_at)
       ON DUPLICATE KEY UPDATE
         enabled = VALUES(enabled),
         chat_mode_enabled = VALUES(chat_mode_enabled),
@@ -755,6 +779,8 @@ if (!function_exists('ymlb_module_code')) {
         chat_bot_username = VALUES(chat_bot_username),
         chat_webhook_secret = VALUES(chat_webhook_secret),
         affiliate_api_key = VALUES(affiliate_api_key),
+        partner_mode_enabled = VALUES(partner_mode_enabled),
+        manual_mode_enabled = VALUES(manual_mode_enabled),
         geo_id = VALUES(geo_id),
         link_static_params = VALUES(link_static_params),
         listener_path = VALUES(listener_path),
@@ -772,6 +798,8 @@ if (!function_exists('ymlb_module_code')) {
       ':chat_bot_username' => $chatBotUsername,
       ':chat_webhook_secret' => $chatWebhookSecret,
       ':affiliate_api_key' => $affiliateApiKey,
+      ':partner_mode_enabled' => $partnerModeEnabled,
+      ':manual_mode_enabled' => $manualModeEnabled,
       ':geo_id' => $geoId,
       ':link_static_params' => $linkStaticParams,
       ':listener_path' => $listenerPath,
@@ -3254,6 +3282,66 @@ if (!function_exists('ymlb_module_code')) {
   }
 
   /**
+   * ymlb_select_link_route()
+   *
+   * @param array<string,mixed> $settings
+   * @return array<string,mixed>
+   */
+  function ymlb_select_link_route(string $url2, string $manualClean, string $affiliateApiKey, string $clid, array $settings): array
+  {
+    $partnerEnabled = ((int)($settings['partner_mode_enabled'] ?? 1) === 1);
+    $manualEnabled = ((int)($settings['manual_mode_enabled'] ?? 1) === 1);
+    $partnerReason = '';
+
+    if ($partnerEnabled) {
+      if ($affiliateApiKey === '') {
+        $partnerReason = 'affiliate_api_key_empty';
+      } else {
+        $partner = ymlb_affiliate_partner_link_create($url2, $affiliateApiKey, $clid);
+        if (!is_array($partner)) {
+          $partnerReason = 'partner_not_created';
+        } else {
+          $partnerUrl = trim((string)($partner['url'] ?? ''));
+          if ($partnerUrl !== '' && ymlb_is_market_url($partnerUrl)) {
+            return [
+              'can_build' => 1,
+              'base_link' => $partnerUrl,
+              'link_mode' => 'partner_url3',
+              'partner_reason' => 'ok',
+            ];
+          }
+          $partnerReason = 'partner_url_invalid';
+        }
+      }
+    } else {
+      $partnerReason = 'partner_mode_disabled';
+    }
+
+    if ($manualEnabled) {
+      return [
+        'can_build' => 1,
+        'base_link' => $manualClean,
+        'link_mode' => 'fallback_manual',
+        'partner_reason' => $partnerReason,
+      ];
+    }
+
+    $finalReason = $partnerReason;
+    if ($finalReason === '') {
+      $finalReason = 'manual_mode_disabled';
+    } else {
+      $finalReason .= '|manual_mode_disabled';
+    }
+
+    return [
+      'can_build' => 0,
+      'base_link' => '',
+      'link_mode' => 'not_built',
+      'partner_reason' => $finalReason,
+    ];
+  }
+
+  /**
    * ymlb_tg_escape()
    */
   function ymlb_tg_escape(string $text): string
@@ -3811,25 +3899,24 @@ if (!function_exists('ymlb_module_code')) {
         continue;
       }
       $siteName = trim((string)($site['name'] ?? 'Площадка'));
-      $baseLink = $manualClean;
-      $linkMode = 'fallback_manual';
-      $partnerReason = '';
-      if ($affiliateApiKey === '') {
-        $partnerReason = 'affiliate_api_key_empty';
-      } else {
-        $partner = ymlb_affiliate_partner_link_create($url2, $affiliateApiKey, $clid);
-        if (!is_array($partner)) {
-          $partnerReason = 'partner_not_created';
-        } else {
-          $partnerUrl = trim((string)($partner['url'] ?? ''));
-          if ($partnerUrl !== '' && ymlb_is_market_url($partnerUrl)) {
-            $baseLink = $partnerUrl;
-            $linkMode = 'partner_url3';
-            $partnerReason = 'ok';
-          } else {
-            $partnerReason = 'partner_url_invalid';
-          }
-        }
+      $route = ymlb_select_link_route($url2, $manualClean, $affiliateApiKey, $clid, $settings);
+      $baseLink = (string)($route['base_link'] ?? '');
+      $linkMode = (string)($route['link_mode'] ?? 'not_built');
+      $partnerReason = (string)($route['partner_reason'] ?? '');
+
+      if ((int)($route['can_build'] ?? 0) !== 1) {
+        ymlb_stage_log('pipeline_channel', 'error', [
+          'stage' => 'partner_link',
+          'chat_id' => $chatId,
+          'binding_id' => $bindingId,
+          'site_id' => (int)($site['id'] ?? 0),
+          'clid' => $clid,
+          'reason' => $partnerReason,
+          'url1_resolved' => $url1,
+          'url2_clean' => $url2,
+          'manual_clean_url' => $manualClean,
+        ]);
+        continue;
       }
 
       if ($linkMode !== 'partner_url3') {
@@ -3974,6 +4061,8 @@ if (!function_exists('ymlb_module_code')) {
         'chat_id' => $chatId,
         'binding_id' => $bindingId,
         'reason' => 'links_not_built',
+        'partner_mode_enabled' => (int)($settings['partner_mode_enabled'] ?? 1),
+        'manual_mode_enabled' => (int)($settings['manual_mode_enabled'] ?? 1),
       ]);
       return ['handled' => false, 'reason' => 'links_not_built'];
     }
@@ -4480,5 +4569,4 @@ if (!function_exists('ymlb_module_code')) {
     ];
   }
 }
-
 
