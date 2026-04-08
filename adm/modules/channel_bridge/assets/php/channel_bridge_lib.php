@@ -884,8 +884,16 @@ if (!function_exists('channel_bridge_now')) {
     $mediaGroupId = trim((string)($payload['tg_media_group_id'] ?? ''));
     $sourceMessageId = trim((string)($payload['source_message_id'] ?? ''));
     $messageText = channel_bridge_normalize_text((string)($payload['message_text'] ?? ''));
+    $payloadTextHtml = trim((string)($payload['tg_text_html'] ?? ''));
     $payloadPublicPostUrl = trim((string)($payload['tg_public_post_url'] ?? ''));
     $payloadChatUsername = trim((string)($payload['tg_chat_username'] ?? ''));
+    $payloadTextLinkUrls = [];
+    if (isset($payload['tg_text_link_urls']) && is_array($payload['tg_text_link_urls'])) {
+      foreach ($payload['tg_text_link_urls'] as $url) {
+        $url = trim((string)$url);
+        if ($url !== '') $payloadTextLinkUrls[$url] = true;
+      }
+    }
 
     if ($sourcePlatform !== CHANNEL_BRIDGE_SOURCE_TG || $sourceChatId === '' || $mediaGroupId === '' || $sourceMessageId === '') {
       return ['mode' => 'skip'];
@@ -970,6 +978,25 @@ if (!function_exists('channel_bridge_now')) {
     } elseif (!isset($state['message_text'])) {
       $state['message_text'] = '';
     }
+    if (!isset($state['tg_text_html'])) $state['tg_text_html'] = '';
+    if ((string)$state['tg_text_html'] === '' && $payloadTextHtml !== '') {
+      $state['tg_text_html'] = $payloadTextHtml;
+      $state['touched_at'] = $now;
+    }
+    $stateTextLinkUrls = [];
+    if (isset($state['tg_text_link_urls']) && is_array($state['tg_text_link_urls'])) {
+      foreach ($state['tg_text_link_urls'] as $url) {
+        $url = trim((string)$url);
+        if ($url !== '') $stateTextLinkUrls[$url] = true;
+      }
+    }
+    foreach (array_keys($payloadTextLinkUrls) as $url) {
+      if (!isset($stateTextLinkUrls[$url])) {
+        $stateTextLinkUrls[$url] = true;
+        $state['touched_at'] = $now;
+      }
+    }
+    $state['tg_text_link_urls'] = array_keys($stateTextLinkUrls);
     if (!isset($state['tg_public_post_url'])) $state['tg_public_post_url'] = '';
     if (!isset($state['tg_chat_username'])) $state['tg_chat_username'] = '';
     if ((string)$state['tg_public_post_url'] === '' && $payloadPublicPostUrl !== '') {
@@ -1038,10 +1065,14 @@ if (!function_exists('channel_bridge_now')) {
       'source_chat_id' => $sourceChatId,
       'source_message_id' => 'mg:' . $mediaGroupId,
       'message_text' => channel_bridge_normalize_text((string)($state2['message_text'] ?? '')),
+      'tg_text_html' => trim((string)($state2['tg_text_html'] ?? '')),
       'tg_media_group_id' => $mediaGroupId,
       'tg_media_group_message_ids' => $msgIds,
       'tg_photo_file_ids' => $imgIds,
       'tg_photo_file_id' => ($imgIds[0] ?? ''),
+      'tg_text_link_urls' => array_values(array_unique(array_filter(array_map('trim', (array)($state2['tg_text_link_urls'] ?? [])), static function ($url) {
+        return $url !== '';
+      }))),
       'tg_public_post_url' => trim((string)($state2['tg_public_post_url'] ?? '')),
       'tg_chat_username' => trim((string)($state2['tg_chat_username'] ?? '')),
     ];
