@@ -33,11 +33,20 @@ try {
 
   audit_log(ymlb_module_code(), 'settings_update', 'info', [
     'enabled' => (int)$settings['enabled'],
+    'chat_mode_enabled' => (int)($settings['chat_mode_enabled'] ?? 0),
+    'chat_bot_separate' => (int)($settings['chat_bot_separate'] ?? 0),
+    'max_enabled' => (int)($settings['max_enabled'] ?? 0),
+    'bot_username' => (string)($settings['bot_username'] ?? ''),
+    'chat_bot_username' => (string)($settings['chat_bot_username'] ?? ''),
+    'listener_path' => (string)($settings['listener_path'] ?? ''),
+    'chat_listener_path' => (string)($settings['chat_listener_path'] ?? ''),
+    'max_listener_path' => (string)($settings['max_listener_path'] ?? ''),
   ], null, null, $uid, $roles[0] ?? null);
 
   json_ok([
     'settings' => $settings,
     'listener_url' => ymlb_listener_url($settings),
+    'max_listener_url' => ymlb_max_listener_url($settings),
   ]);
 } catch (Throwable $e) {
   audit_log(ymlb_module_code(), 'settings_update', 'error', [

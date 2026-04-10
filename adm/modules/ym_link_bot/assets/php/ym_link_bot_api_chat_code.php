@@ -47,6 +47,7 @@ try {
       $_POST['binding_id'] = $bindingId;
     }
   }
+  $_POST['_allow_any_sites'] = ($canManage ? 1 : 0);
 
   $code = ymlb_chat_generate_code($pdo, $_POST);
   ymlb_stage_log('chat_code', 'info', [
@@ -67,4 +68,3 @@ try {
   ]);
   json_err($e->getMessage(), 400);
 }
-

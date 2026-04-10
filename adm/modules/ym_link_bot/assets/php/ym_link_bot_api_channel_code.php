@@ -47,6 +47,7 @@ try {
       $_POST['binding_id'] = $bindingId;
     }
   }
+  $_POST['_allow_any_sites'] = ($canManage ? 1 : 0);
 
   $code = ymlb_channel_generate_code($pdo, $_POST);
   ymlb_stage_log('channel_code', 'info', [

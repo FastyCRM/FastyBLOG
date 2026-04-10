@@ -171,6 +171,14 @@ try {
         (string)($photoPublic ?: $productPhoto)
       );
       if (!$erid) {
+        $ordLast = ymlb_ord_last_result();
+        $ordReason = trim((string)($ordLast['reason'] ?? ''));
+        if ($ordLast) {
+          if ($oauthLikelyExpired && ($ordReason === 'oauth_empty' || $ordReason === 'oauth_rejected')) {
+            json_err('РћС€РёР±РєР° ERID: OAuth-РєР»СЋС‡, РІРµСЂРѕСЏС‚РЅРѕ, Р·Р°РєРѕРЅС‡РёР»СЃСЏ. РћР±РЅРѕРІРёС‚Рµ OAuth Рё РїРѕРІС‚РѕСЂРёС‚Рµ.', 400);
+          }
+          json_err(ymlb_ord_error_message($ordLast), 400);
+        }
         if ($oauthLikelyExpired) {
           json_err('Ошибка ERID: OAuth-ключ, вероятно, закончился. Обновите OAuth и повторите.', 400);
         }

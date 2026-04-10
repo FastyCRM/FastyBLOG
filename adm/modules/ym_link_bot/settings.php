@@ -15,6 +15,7 @@ const YM_LINK_BOT_ALLOWED_DO = [
   'api_binding_delete',
   'api_channel_code',
   'api_chat_code',
+  'api_chat_sites_save',
   'api_channel_toggle',
   'api_channel_delete',
   'api_site_save',
@@ -24,6 +25,8 @@ const YM_LINK_BOT_ALLOWED_DO = [
   'api_webhook_set',
   'api_chat_webhook_info',
   'api_chat_webhook_set',
+  'api_max_webhook_info',
+  'api_max_webhook_set',
   'api_cleanup_photos',
 ];
 

@@ -94,6 +94,16 @@ if (!function_exists('ymlb_module_code')) {
   }
 
   /**
+   * ymlb_platform_norm()
+   * Normalizes transport platform code used by chat/channel bindings.
+   */
+  function ymlb_platform_norm(string $platform): string
+  {
+    $platform = strtolower(trim($platform));
+    return ($platform === 'max') ? 'max' : 'tg';
+  }
+
+  /**
    * ymlb_ensure_channels_indexes()
    * Keeps channels indexes compatible with multi-binding mode.
    */
@@ -108,41 +118,85 @@ if (!function_exists('ymlb_module_code')) {
     if (ymlb_table_index_exists($pdo, $channelsName, 'uq_kind_chat_id')) {
       $pdo->exec("ALTER TABLE {$channels} DROP INDEX uq_kind_chat_id");
     }
+    if (ymlb_table_index_exists($pdo, $channelsName, 'uq_kind_binding_chat')) {
+      $pdo->exec("ALTER TABLE {$channels} DROP INDEX uq_kind_binding_chat");
+    }
+    if (ymlb_table_index_exists($pdo, $channelsName, 'uq_binding_chat_id')) {
+      $pdo->exec("ALTER TABLE {$channels} DROP INDEX uq_binding_chat_id");
+    }
+    if (ymlb_table_index_exists($pdo, $channelsName, 'uq_kind_platform_binding_chat')) {
+      $pdo->exec("ALTER TABLE {$channels} DROP INDEX uq_kind_platform_binding_chat");
+    }
+    if (ymlb_table_index_exists($pdo, $channelsName, 'uq_platform_binding_chat_id')) {
+      $pdo->exec("ALTER TABLE {$channels} DROP INDEX uq_platform_binding_chat_id");
+    }
 
     $hasChatKind = ymlb_table_column_exists($pdo, $channelsName, 'chat_kind');
+    $hasPlatform = ymlb_table_column_exists($pdo, $channelsName, 'platform');
     if ($hasChatKind) {
-      if (!ymlb_table_index_exists($pdo, $channelsName, 'uq_kind_binding_chat')) {
+      if ($hasPlatform) {
         $pdo->exec("
           DELETE c1
           FROM {$channels} c1
           JOIN {$channels} c2
             ON c1.id < c2.id
            AND c1.chat_kind = c2.chat_kind
+           AND c1.platform = c2.platform
            AND c1.binding_id = c2.binding_id
            AND (c1.channel_chat_id <=> c2.channel_chat_id)
         ");
         $pdo->exec("
           ALTER TABLE {$channels}
-          ADD UNIQUE KEY uq_kind_binding_chat (chat_kind, binding_id, channel_chat_id)
+          ADD UNIQUE KEY uq_kind_platform_binding_chat (chat_kind, platform, binding_id, channel_chat_id)
         ");
+        return;
       }
-      return;
-    }
 
-    if (!ymlb_table_index_exists($pdo, $channelsName, 'uq_binding_chat_id')) {
       $pdo->exec("
         DELETE c1
         FROM {$channels} c1
         JOIN {$channels} c2
           ON c1.id < c2.id
+         AND c1.chat_kind = c2.chat_kind
          AND c1.binding_id = c2.binding_id
          AND (c1.channel_chat_id <=> c2.channel_chat_id)
       ");
       $pdo->exec("
         ALTER TABLE {$channels}
-        ADD UNIQUE KEY uq_binding_chat_id (binding_id, channel_chat_id)
+        ADD UNIQUE KEY uq_kind_binding_chat (chat_kind, binding_id, channel_chat_id)
       ");
+      return;
     }
+
+    if ($hasPlatform) {
+      $pdo->exec("
+        DELETE c1
+        FROM {$channels} c1
+        JOIN {$channels} c2
+          ON c1.id < c2.id
+         AND c1.platform = c2.platform
+         AND c1.binding_id = c2.binding_id
+         AND (c1.channel_chat_id <=> c2.channel_chat_id)
+      ");
+      $pdo->exec("
+        ALTER TABLE {$channels}
+        ADD UNIQUE KEY uq_platform_binding_chat_id (platform, binding_id, channel_chat_id)
+      ");
+      return;
+    }
+
+    $pdo->exec("
+      DELETE c1
+      FROM {$channels} c1
+      JOIN {$channels} c2
+        ON c1.id < c2.id
+       AND c1.binding_id = c2.binding_id
+       AND (c1.channel_chat_id <=> c2.channel_chat_id)
+    ");
+    $pdo->exec("
+      ALTER TABLE {$channels}
+      ADD UNIQUE KEY uq_binding_chat_id (binding_id, channel_chat_id)
+    ");
   }
 
   /**
@@ -319,6 +373,15 @@ if (!function_exists('ymlb_module_code')) {
   }
 
   /**
+   * ymlb_max_listener_path_default()
+   * Default relative listener path for MAX webhook endpoint.
+   */
+  function ymlb_max_listener_path_default(): string
+  {
+    return '/adm/modules/' . ymlb_module_code() . '/max_webhook.php';
+  }
+
+  /**
    * ymlb_base_url()
    * Best-effort site base URL.
    */
@@ -390,6 +453,33 @@ if (!function_exists('ymlb_module_code')) {
   }
 
   /**
+   * ymlb_max_listener_url()
+   * Computes full webhook URL for MAX subscription.
+   *
+   * @param array<string,mixed> $settings
+   */
+  function ymlb_max_listener_url(array $settings): string
+  {
+    $path = trim((string)($settings['max_listener_path'] ?? ''));
+    if ($path === '') {
+      $path = ymlb_max_listener_path_default();
+    }
+
+    if (preg_match('~^https?://~i', $path)) {
+      return $path;
+    }
+
+    if (function_exists('url')) {
+      $path = url($path);
+    }
+
+    $base = ymlb_base_url();
+    if ($base === '') return $path;
+
+    return rtrim($base, '/') . '/' . ltrim($path, '/');
+  }
+
+  /**
    * ymlb_settings_defaults()
    *
    * @return array<string,mixed>
@@ -400,12 +490,16 @@ if (!function_exists('ymlb_module_code')) {
       'enabled' => 0,
       'chat_mode_enabled' => 1,
       'chat_bot_separate' => 0,
+      'max_enabled' => 0,
       'bot_token' => '',
       'bot_username' => '',
       'webhook_secret' => '',
       'chat_bot_token' => '',
       'chat_bot_username' => '',
       'chat_webhook_secret' => '',
+      'max_api_key' => '',
+      'max_base_url' => 'https://platform-api.max.ru',
+      'max_send_path' => '/messages',
       'affiliate_api_key' => '',
       'partner_mode_enabled' => 1,
       'manual_mode_enabled' => 1,
@@ -413,6 +507,7 @@ if (!function_exists('ymlb_module_code')) {
       'link_static_params' => 'pp=900&mclid=1003&distr_type=7',
       'listener_path' => ymlb_listener_path_default(),
       'chat_listener_path' => ymlb_chat_listener_path_default(),
+      'max_listener_path' => ymlb_max_listener_path_default(),
     ];
   }
 
@@ -431,6 +526,7 @@ if (!function_exists('ymlb_module_code')) {
     $bindings = ymlb_qi(ymlb_table('bindings'));
     $channels = ymlb_qi(ymlb_table('channels'));
     $sites = ymlb_qi(ymlb_table('sites'));
+    $channelSites = ymlb_qi(ymlb_table('channel_sites'));
     $updates = ymlb_qi(ymlb_table('updates'));
     $photos = ymlb_qi(ymlb_table('photos'));
 
@@ -440,12 +536,16 @@ if (!function_exists('ymlb_module_code')) {
         enabled TINYINT UNSIGNED NOT NULL DEFAULT 0,
         chat_mode_enabled TINYINT UNSIGNED NOT NULL DEFAULT 1,
         chat_bot_separate TINYINT UNSIGNED NOT NULL DEFAULT 0,
+        max_enabled TINYINT UNSIGNED NOT NULL DEFAULT 0,
         bot_token VARCHAR(255) NOT NULL DEFAULT '',
         bot_username VARCHAR(64) NOT NULL DEFAULT '',
         webhook_secret VARCHAR(128) NOT NULL DEFAULT '',
         chat_bot_token VARCHAR(255) NOT NULL DEFAULT '',
         chat_bot_username VARCHAR(64) NOT NULL DEFAULT '',
         chat_webhook_secret VARCHAR(128) NOT NULL DEFAULT '',
+        max_api_key VARCHAR(255) NOT NULL DEFAULT '',
+        max_base_url VARCHAR(255) NOT NULL DEFAULT 'https://platform-api.max.ru',
+        max_send_path VARCHAR(255) NOT NULL DEFAULT '/messages',
         affiliate_api_key VARCHAR(255) NOT NULL DEFAULT '',
         partner_mode_enabled TINYINT UNSIGNED NOT NULL DEFAULT 1,
         manual_mode_enabled TINYINT UNSIGNED NOT NULL DEFAULT 1,
@@ -453,6 +553,7 @@ if (!function_exists('ymlb_module_code')) {
         link_static_params VARCHAR(255) NOT NULL DEFAULT 'pp=900&mclid=1003&distr_type=7',
         listener_path VARCHAR(255) NOT NULL DEFAULT '',
         chat_listener_path VARCHAR(255) NOT NULL DEFAULT '',
+        max_listener_path VARCHAR(255) NOT NULL DEFAULT '',
         created_at DATETIME NOT NULL,
         updated_at DATETIME NOT NULL,
         PRIMARY KEY (id)
@@ -469,6 +570,12 @@ if (!function_exists('ymlb_module_code')) {
       $pdo->exec("
         ALTER TABLE {$settings}
         ADD COLUMN chat_bot_separate TINYINT UNSIGNED NOT NULL DEFAULT 0 AFTER chat_mode_enabled
+      ");
+    }
+    if (!ymlb_table_column_exists($pdo, ymlb_table('settings'), 'max_enabled')) {
+      $pdo->exec("
+        ALTER TABLE {$settings}
+        ADD COLUMN max_enabled TINYINT UNSIGNED NOT NULL DEFAULT 0 AFTER chat_bot_separate
       ");
     }
     if (!ymlb_table_column_exists($pdo, ymlb_table('settings'), 'chat_bot_token')) {
@@ -489,10 +596,34 @@ if (!function_exists('ymlb_module_code')) {
         ADD COLUMN chat_webhook_secret VARCHAR(128) NOT NULL DEFAULT '' AFTER chat_bot_username
       ");
     }
+    if (!ymlb_table_column_exists($pdo, ymlb_table('settings'), 'max_api_key')) {
+      $pdo->exec("
+        ALTER TABLE {$settings}
+        ADD COLUMN max_api_key VARCHAR(255) NOT NULL DEFAULT '' AFTER chat_webhook_secret
+      ");
+    }
+    if (!ymlb_table_column_exists($pdo, ymlb_table('settings'), 'max_base_url')) {
+      $pdo->exec("
+        ALTER TABLE {$settings}
+        ADD COLUMN max_base_url VARCHAR(255) NOT NULL DEFAULT 'https://platform-api.max.ru' AFTER max_api_key
+      ");
+    }
+    if (!ymlb_table_column_exists($pdo, ymlb_table('settings'), 'max_send_path')) {
+      $pdo->exec("
+        ALTER TABLE {$settings}
+        ADD COLUMN max_send_path VARCHAR(255) NOT NULL DEFAULT '/messages' AFTER max_base_url
+      ");
+    }
     if (!ymlb_table_column_exists($pdo, ymlb_table('settings'), 'chat_listener_path')) {
       $pdo->exec("
         ALTER TABLE {$settings}
         ADD COLUMN chat_listener_path VARCHAR(255) NOT NULL DEFAULT '' AFTER listener_path
+      ");
+    }
+    if (!ymlb_table_column_exists($pdo, ymlb_table('settings'), 'max_listener_path')) {
+      $pdo->exec("
+        ALTER TABLE {$settings}
+        ADD COLUMN max_listener_path VARCHAR(255) NOT NULL DEFAULT '' AFTER chat_listener_path
       ");
     }
     if (!ymlb_table_column_exists($pdo, ymlb_table('settings'), 'partner_mode_enabled')) {
@@ -532,6 +663,7 @@ if (!function_exists('ymlb_module_code')) {
       CREATE TABLE IF NOT EXISTS {$channels} (
         id INT UNSIGNED NOT NULL AUTO_INCREMENT,
         binding_id INT UNSIGNED NOT NULL,
+        platform VARCHAR(16) NOT NULL DEFAULT 'tg',
         channel_chat_id VARCHAR(64) NULL DEFAULT NULL,
         channel_username VARCHAR(128) NOT NULL DEFAULT '',
         channel_title VARCHAR(255) NOT NULL DEFAULT '',
@@ -542,11 +674,18 @@ if (!function_exists('ymlb_module_code')) {
         created_at DATETIME NOT NULL,
         updated_at DATETIME NOT NULL,
         PRIMARY KEY (id),
-        UNIQUE KEY uq_binding_chat_id (binding_id, channel_chat_id),
+        UNIQUE KEY uq_platform_binding_chat_id (platform, binding_id, channel_chat_id),
         KEY idx_binding (binding_id),
         KEY idx_confirm (confirm_code, confirm_expires_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
+
+    if (!ymlb_table_column_exists($pdo, ymlb_table('channels'), 'platform')) {
+      $pdo->exec("
+        ALTER TABLE {$channels}
+        ADD COLUMN platform VARCHAR(16) NOT NULL DEFAULT 'tg' AFTER binding_id
+      ");
+    }
 
     $pdo->exec("
       CREATE TABLE IF NOT EXISTS {$sites} (
@@ -560,6 +699,16 @@ if (!function_exists('ymlb_module_code')) {
         PRIMARY KEY (id),
         UNIQUE KEY uq_binding_clid (binding_id, clid),
         KEY idx_binding_active (binding_id, is_active)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ");
+
+    $pdo->exec("
+      CREATE TABLE IF NOT EXISTS {$channelSites} (
+        channel_id INT UNSIGNED NOT NULL,
+        site_id INT UNSIGNED NOT NULL,
+        created_at DATETIME NOT NULL,
+        PRIMARY KEY (channel_id, site_id),
+        KEY idx_site_id (site_id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
 
@@ -618,9 +767,9 @@ if (!function_exists('ymlb_module_code')) {
     $defaults = ymlb_settings_defaults();
     $stInit = $pdo->prepare("
       INSERT INTO {$settings}
-      (id, enabled, chat_mode_enabled, chat_bot_separate, bot_token, bot_username, webhook_secret, chat_bot_token, chat_bot_username, chat_webhook_secret, affiliate_api_key, partner_mode_enabled, manual_mode_enabled, geo_id, link_static_params, listener_path, chat_listener_path, created_at, updated_at)
+      (id, enabled, chat_mode_enabled, chat_bot_separate, max_enabled, bot_token, bot_username, webhook_secret, chat_bot_token, chat_bot_username, chat_webhook_secret, max_api_key, max_base_url, max_send_path, affiliate_api_key, partner_mode_enabled, manual_mode_enabled, geo_id, link_static_params, listener_path, chat_listener_path, max_listener_path, created_at, updated_at)
       VALUES
-      (1, :enabled, :chat_mode_enabled, :chat_bot_separate, :bot_token, :bot_username, :webhook_secret, :chat_bot_token, :chat_bot_username, :chat_webhook_secret, :affiliate_api_key, :partner_mode_enabled, :manual_mode_enabled, :geo_id, :link_static_params, :listener_path, :chat_listener_path, :created_at, :updated_at)
+      (1, :enabled, :chat_mode_enabled, :chat_bot_separate, :max_enabled, :bot_token, :bot_username, :webhook_secret, :chat_bot_token, :chat_bot_username, :chat_webhook_secret, :max_api_key, :max_base_url, :max_send_path, :affiliate_api_key, :partner_mode_enabled, :manual_mode_enabled, :geo_id, :link_static_params, :listener_path, :chat_listener_path, :max_listener_path, :created_at, :updated_at)
       ON DUPLICATE KEY UPDATE
         id = VALUES(id)
     ");
@@ -629,12 +778,16 @@ if (!function_exists('ymlb_module_code')) {
       ':enabled' => (int)$defaults['enabled'],
       ':chat_mode_enabled' => (int)$defaults['chat_mode_enabled'],
       ':chat_bot_separate' => (int)$defaults['chat_bot_separate'],
+      ':max_enabled' => (int)$defaults['max_enabled'],
       ':bot_token' => (string)$defaults['bot_token'],
       ':bot_username' => (string)$defaults['bot_username'],
       ':webhook_secret' => (string)$defaults['webhook_secret'],
       ':chat_bot_token' => (string)$defaults['chat_bot_token'],
       ':chat_bot_username' => (string)$defaults['chat_bot_username'],
       ':chat_webhook_secret' => (string)$defaults['chat_webhook_secret'],
+      ':max_api_key' => (string)$defaults['max_api_key'],
+      ':max_base_url' => (string)$defaults['max_base_url'],
+      ':max_send_path' => (string)$defaults['max_send_path'],
       ':affiliate_api_key' => (string)$defaults['affiliate_api_key'],
       ':partner_mode_enabled' => (int)$defaults['partner_mode_enabled'],
       ':manual_mode_enabled' => (int)$defaults['manual_mode_enabled'],
@@ -642,6 +795,7 @@ if (!function_exists('ymlb_module_code')) {
       ':link_static_params' => (string)$defaults['link_static_params'],
       ':listener_path' => (string)$defaults['listener_path'],
       ':chat_listener_path' => (string)$defaults['chat_listener_path'],
+      ':max_listener_path' => (string)$defaults['max_listener_path'],
       ':created_at' => $now,
       ':updated_at' => $now,
     ]);
@@ -665,19 +819,24 @@ if (!function_exists('ymlb_module_code')) {
         enabled,
         chat_mode_enabled,
         chat_bot_separate,
+        max_enabled,
         bot_token,
         bot_username,
         webhook_secret,
         chat_bot_token,
         chat_bot_username,
         chat_webhook_secret,
+        max_api_key,
+        max_base_url,
+        max_send_path,
         affiliate_api_key,
         partner_mode_enabled,
         manual_mode_enabled,
         geo_id,
         link_static_params,
         listener_path,
-        chat_listener_path
+        chat_listener_path,
+        max_listener_path
       FROM {$table}
       WHERE id = 1
       LIMIT 1
@@ -691,12 +850,16 @@ if (!function_exists('ymlb_module_code')) {
       'enabled' => ((int)($row['enabled'] ?? 0) === 1) ? 1 : 0,
       'chat_mode_enabled' => ((int)($row['chat_mode_enabled'] ?? 1) === 1) ? 1 : 0,
       'chat_bot_separate' => ((int)($row['chat_bot_separate'] ?? 0) === 1) ? 1 : 0,
+      'max_enabled' => ((int)($row['max_enabled'] ?? 0) === 1) ? 1 : 0,
       'bot_token' => trim((string)($row['bot_token'] ?? '')),
       'bot_username' => ltrim(trim((string)($row['bot_username'] ?? '')), '@'),
       'webhook_secret' => trim((string)($row['webhook_secret'] ?? '')),
       'chat_bot_token' => trim((string)($row['chat_bot_token'] ?? '')),
       'chat_bot_username' => ltrim(trim((string)($row['chat_bot_username'] ?? '')), '@'),
       'chat_webhook_secret' => trim((string)($row['chat_webhook_secret'] ?? '')),
+      'max_api_key' => trim((string)($row['max_api_key'] ?? '')),
+      'max_base_url' => rtrim(trim((string)($row['max_base_url'] ?? 'https://platform-api.max.ru')), '/'),
+      'max_send_path' => trim((string)($row['max_send_path'] ?? '/messages')),
       'affiliate_api_key' => trim((string)($row['affiliate_api_key'] ?? '')),
       'partner_mode_enabled' => ((int)($row['partner_mode_enabled'] ?? 1) === 1) ? 1 : 0,
       'manual_mode_enabled' => ((int)($row['manual_mode_enabled'] ?? 1) === 1) ? 1 : 0,
@@ -704,6 +867,7 @@ if (!function_exists('ymlb_module_code')) {
       'link_static_params' => trim((string)($row['link_static_params'] ?? '')),
       'listener_path' => trim((string)($row['listener_path'] ?? '')),
       'chat_listener_path' => trim((string)($row['chat_listener_path'] ?? '')),
+      'max_listener_path' => trim((string)($row['max_listener_path'] ?? '')),
     ];
 
     if ($settings['geo_id'] < 1) $settings['geo_id'] = 213;
@@ -715,6 +879,15 @@ if (!function_exists('ymlb_module_code')) {
     }
     if ($settings['chat_listener_path'] === '') {
       $settings['chat_listener_path'] = (string)$defaults['chat_listener_path'];
+    }
+    if ($settings['max_base_url'] === '' || $settings['max_base_url'] === 'https://botapi.max.ru') {
+      $settings['max_base_url'] = (string)$defaults['max_base_url'];
+    }
+    if ($settings['max_send_path'] === '') {
+      $settings['max_send_path'] = (string)$defaults['max_send_path'];
+    }
+    if ($settings['max_listener_path'] === '') {
+      $settings['max_listener_path'] = (string)$defaults['max_listener_path'];
     }
 
     return $settings;
@@ -734,12 +907,16 @@ if (!function_exists('ymlb_module_code')) {
     $enabled = ((int)($input['enabled'] ?? 0) === 1) ? 1 : 0;
     $chatModeEnabled = ((int)($input['chat_mode_enabled'] ?? 0) === 1) ? 1 : 0;
     $chatBotSeparate = ((int)($input['chat_bot_separate'] ?? 0) === 1) ? 1 : 0;
+    $maxEnabled = ((int)($input['max_enabled'] ?? 0) === 1) ? 1 : 0;
     $botToken = trim((string)($input['bot_token'] ?? ''));
     $botUsername = ltrim(trim((string)($input['bot_username'] ?? '')), '@');
     $webhookSecret = trim((string)($input['webhook_secret'] ?? ''));
     $chatBotToken = trim((string)($input['chat_bot_token'] ?? ''));
     $chatBotUsername = ltrim(trim((string)($input['chat_bot_username'] ?? '')), '@');
     $chatWebhookSecret = trim((string)($input['chat_webhook_secret'] ?? ''));
+    $maxApiKey = trim((string)($input['max_api_key'] ?? ''));
+    $maxBaseUrl = rtrim(trim((string)($input['max_base_url'] ?? 'https://platform-api.max.ru')), '/');
+    $maxSendPath = trim((string)($input['max_send_path'] ?? '/messages'));
     $affiliateApiKey = trim((string)($input['affiliate_api_key'] ?? ''));
     $partnerModeEnabled = ((int)($input['partner_mode_enabled'] ?? 0) === 1) ? 1 : 0;
     $manualModeEnabled = ((int)($input['manual_mode_enabled'] ?? 0) === 1) ? 1 : 0;
@@ -747,6 +924,7 @@ if (!function_exists('ymlb_module_code')) {
     $linkStaticParams = trim((string)($input['link_static_params'] ?? ''));
     $listenerPath = trim((string)($input['listener_path'] ?? ''));
     $chatListenerPath = trim((string)($input['chat_listener_path'] ?? ''));
+    $maxListenerPath = trim((string)($input['max_listener_path'] ?? ''));
 
     if ($geoId < 1) $geoId = 213;
     if ($geoId > 1000000) $geoId = 213;
@@ -759,25 +937,38 @@ if (!function_exists('ymlb_module_code')) {
     if ($chatListenerPath === '') {
       $chatListenerPath = (string)$defaults['chat_listener_path'];
     }
+    if ($maxBaseUrl === '' || $maxBaseUrl === 'https://botapi.max.ru') {
+      $maxBaseUrl = (string)$defaults['max_base_url'];
+    }
+    if ($maxSendPath === '') {
+      $maxSendPath = (string)$defaults['max_send_path'];
+    }
+    if ($maxListenerPath === '') {
+      $maxListenerPath = (string)$defaults['max_listener_path'];
+    }
 
     $table = ymlb_qi(ymlb_table('settings'));
     $now = ymlb_now();
 
     $st = $pdo->prepare("
       INSERT INTO {$table}
-      (id, enabled, chat_mode_enabled, chat_bot_separate, bot_token, bot_username, webhook_secret, chat_bot_token, chat_bot_username, chat_webhook_secret, affiliate_api_key, partner_mode_enabled, manual_mode_enabled, geo_id, link_static_params, listener_path, chat_listener_path, created_at, updated_at)
+      (id, enabled, chat_mode_enabled, chat_bot_separate, max_enabled, bot_token, bot_username, webhook_secret, chat_bot_token, chat_bot_username, chat_webhook_secret, max_api_key, max_base_url, max_send_path, affiliate_api_key, partner_mode_enabled, manual_mode_enabled, geo_id, link_static_params, listener_path, chat_listener_path, max_listener_path, created_at, updated_at)
       VALUES
-      (1, :enabled, :chat_mode_enabled, :chat_bot_separate, :bot_token, :bot_username, :webhook_secret, :chat_bot_token, :chat_bot_username, :chat_webhook_secret, :affiliate_api_key, :partner_mode_enabled, :manual_mode_enabled, :geo_id, :link_static_params, :listener_path, :chat_listener_path, :created_at, :updated_at)
+      (1, :enabled, :chat_mode_enabled, :chat_bot_separate, :max_enabled, :bot_token, :bot_username, :webhook_secret, :chat_bot_token, :chat_bot_username, :chat_webhook_secret, :max_api_key, :max_base_url, :max_send_path, :affiliate_api_key, :partner_mode_enabled, :manual_mode_enabled, :geo_id, :link_static_params, :listener_path, :chat_listener_path, :max_listener_path, :created_at, :updated_at)
       ON DUPLICATE KEY UPDATE
         enabled = VALUES(enabled),
         chat_mode_enabled = VALUES(chat_mode_enabled),
         chat_bot_separate = VALUES(chat_bot_separate),
+        max_enabled = VALUES(max_enabled),
         bot_token = VALUES(bot_token),
         bot_username = VALUES(bot_username),
         webhook_secret = VALUES(webhook_secret),
         chat_bot_token = VALUES(chat_bot_token),
         chat_bot_username = VALUES(chat_bot_username),
         chat_webhook_secret = VALUES(chat_webhook_secret),
+        max_api_key = VALUES(max_api_key),
+        max_base_url = VALUES(max_base_url),
+        max_send_path = VALUES(max_send_path),
         affiliate_api_key = VALUES(affiliate_api_key),
         partner_mode_enabled = VALUES(partner_mode_enabled),
         manual_mode_enabled = VALUES(manual_mode_enabled),
@@ -785,18 +976,23 @@ if (!function_exists('ymlb_module_code')) {
         link_static_params = VALUES(link_static_params),
         listener_path = VALUES(listener_path),
         chat_listener_path = VALUES(chat_listener_path),
+        max_listener_path = VALUES(max_listener_path),
         updated_at = VALUES(updated_at)
     ");
     $st->execute([
       ':enabled' => $enabled,
       ':chat_mode_enabled' => $chatModeEnabled,
       ':chat_bot_separate' => $chatBotSeparate,
+      ':max_enabled' => $maxEnabled,
       ':bot_token' => $botToken,
       ':bot_username' => $botUsername,
       ':webhook_secret' => $webhookSecret,
       ':chat_bot_token' => $chatBotToken,
       ':chat_bot_username' => $chatBotUsername,
       ':chat_webhook_secret' => $chatWebhookSecret,
+      ':max_api_key' => $maxApiKey,
+      ':max_base_url' => $maxBaseUrl,
+      ':max_send_path' => $maxSendPath,
       ':affiliate_api_key' => $affiliateApiKey,
       ':partner_mode_enabled' => $partnerModeEnabled,
       ':manual_mode_enabled' => $manualModeEnabled,
@@ -804,6 +1000,7 @@ if (!function_exists('ymlb_module_code')) {
       ':link_static_params' => $linkStaticParams,
       ':listener_path' => $listenerPath,
       ':chat_listener_path' => $chatListenerPath,
+      ':max_listener_path' => $maxListenerPath,
       ':created_at' => $now,
       ':updated_at' => $now,
     ]);
@@ -1107,6 +1304,29 @@ if (!function_exists('ymlb_module_code')) {
   }
 
   /**
+   * ymlb_int_ids()
+   *
+   * @param mixed $raw
+   * @return array<int,int>
+   */
+  function ymlb_int_ids($raw): array
+  {
+    if (!is_array($raw)) {
+      $raw = [$raw];
+    }
+
+    $out = [];
+    foreach ($raw as $value) {
+      $id = (int)$value;
+      if ($id > 0) {
+        $out[$id] = $id;
+      }
+    }
+
+    return array_values($out);
+  }
+
+  /**
    * ymlb_bindings_list_for_actor()
    *
    * @return array<int,array<string,mixed>>
@@ -1142,6 +1362,46 @@ if (!function_exists('ymlb_module_code')) {
       WHERE id = :id
       LIMIT 1
     ");
+    $st->execute([':id' => $id]);
+    $row = $st->fetch(PDO::FETCH_ASSOC);
+    return is_array($row) ? $row : null;
+  }
+
+  /**
+   * ymlb_channel_get()
+   *
+   * @return array<string,mixed>|null
+   */
+  function ymlb_channel_get(PDO $pdo, int $id): ?array
+  {
+    if ($id <= 0) return null;
+    ymlb_ensure_schema($pdo);
+
+    $channelsName = ymlb_table('channels');
+    $channels = ymlb_qi($channelsName);
+    $hasChatKind = ymlb_table_column_exists($pdo, $channelsName, 'chat_kind');
+    $hasPlatform = ymlb_table_column_exists($pdo, $channelsName, 'platform');
+
+    $sql = "
+      SELECT
+        id,
+        binding_id,
+        " . ($hasPlatform ? "platform," : "'tg' AS platform,") . "
+        " . ($hasChatKind ? "chat_kind," : "'channel' AS chat_kind,") . "
+        channel_chat_id,
+        channel_username,
+        channel_title,
+        confirm_code,
+        confirm_expires_at,
+        confirmed_at,
+        is_active,
+        created_at,
+        updated_at
+      FROM {$channels}
+      WHERE id = :id
+      LIMIT 1
+    ";
+    $st = $pdo->prepare($sql);
     $st->execute([':id' => $id]);
     $row = $st->fetch(PDO::FETCH_ASSOC);
     return is_array($row) ? $row : null;
@@ -1333,12 +1593,14 @@ if (!function_exists('ymlb_module_code')) {
     $channels = ymlb_qi($channelsName);
     $bindings = ymlb_qi(ymlb_table('bindings'));
     $hasChatKind = ymlb_table_column_exists($pdo, $channelsName, 'chat_kind');
+    $hasPlatform = ymlb_table_column_exists($pdo, $channelsName, 'platform');
     $channelWhere = ($hasChatKind ? "WHERE c.chat_kind = 'channel'" : '');
 
     $st = $pdo->query("
       SELECT
         c.id,
         c.binding_id,
+        " . ($hasPlatform ? "c.platform," : "'tg' AS platform,") . "
         " . ($hasChatKind ? "c.chat_kind," : "") . "
         c.channel_chat_id,
         c.channel_username,
@@ -1356,7 +1618,8 @@ if (!function_exists('ymlb_module_code')) {
       ORDER BY c.id DESC
     ");
     $rows = $st ? $st->fetchAll(PDO::FETCH_ASSOC) : [];
-    return is_array($rows) ? $rows : [];
+    $rows = is_array($rows) ? $rows : [];
+    return ymlb_chat_rows_attach_sites($pdo, $rows);
   }
 
   /**
@@ -1386,6 +1649,7 @@ if (!function_exists('ymlb_module_code')) {
     $channels = ymlb_qi($channelsName);
     $bindings = ymlb_qi(ymlb_table('bindings'));
     $hasChatKind = ymlb_table_column_exists($pdo, $channelsName, 'chat_kind');
+    $hasPlatform = ymlb_table_column_exists($pdo, $channelsName, 'platform');
 
     if (!$hasChatKind) return [];
 
@@ -1393,6 +1657,7 @@ if (!function_exists('ymlb_module_code')) {
       SELECT
         c.id,
         c.binding_id,
+        " . ($hasPlatform ? "c.platform," : "'tg' AS platform,") . "
         c.chat_kind,
         c.channel_chat_id,
         c.channel_username,
@@ -1410,7 +1675,8 @@ if (!function_exists('ymlb_module_code')) {
       ORDER BY c.id DESC
     ");
     $rows = $st ? $st->fetchAll(PDO::FETCH_ASSOC) : [];
-    return is_array($rows) ? $rows : [];
+    $rows = is_array($rows) ? $rows : [];
+    return ymlb_chat_rows_attach_sites($pdo, $rows);
   }
 
   /**
@@ -1465,6 +1731,10 @@ if (!function_exists('ymlb_module_code')) {
     ymlb_ensure_schema($pdo);
     $chatKind = strtolower(trim($chatKind));
     if ($chatKind !== 'chat') $chatKind = 'channel';
+    $platform = ymlb_platform_norm((string)($input['platform'] ?? 'tg'));
+    if ($chatKind === 'channel') {
+      $platform = 'tg';
+    }
 
     $requestedBindingId = (int)($input['binding_id'] ?? 0);
     $bindingId = $requestedBindingId;
@@ -1492,32 +1762,69 @@ if (!function_exists('ymlb_module_code')) {
     $channels = ymlb_qi(ymlb_table('channels'));
     $channelsName = ymlb_table('channels');
     $hasChatKind = ymlb_table_column_exists($pdo, $channelsName, 'chat_kind');
+    $hasPlatform = ymlb_table_column_exists($pdo, $channelsName, 'platform');
     $chatModeEnabled = ((int)(ymlb_settings_get($pdo)['chat_mode_enabled'] ?? 1) === 1);
     $now = ymlb_now();
 
     $channelId = 0;
     if ($chatModeEnabled) {
+      $sqlFind = "
+        SELECT id
+        FROM {$channels}
+        WHERE binding_id = :binding_id
+          AND channel_chat_id IS NULL
+          AND confirmed_at IS NULL
+      ";
       if ($hasChatKind) {
-        $stFind = $pdo->query("
-          SELECT id
-          FROM {$channels}
-          WHERE chat_kind = '" . $chatKind . "'
-          ORDER BY id ASC
-          LIMIT 1
-        ");
-      } else {
-        $stFind = $pdo->query("
-          SELECT id
-          FROM {$channels}
-          ORDER BY id ASC
-          LIMIT 1
-        ");
+        $sqlFind .= " AND chat_kind = :chat_kind";
       }
-      $channelId = (int)(($stFind && $stFind->fetchColumn()) ?: 0);
+      if ($hasPlatform) {
+        $sqlFind .= " AND platform = :platform";
+      }
+      if ($expectedUsername !== '') {
+        $sqlFind .= " AND channel_username = :channel_username";
+      }
+      $sqlFind .= "
+        ORDER BY id DESC
+        LIMIT 1
+      ";
+      $stFind = $pdo->prepare($sqlFind);
+      $paramsFind = [
+        ':binding_id' => $bindingId,
+      ];
+      if ($hasChatKind) {
+        $paramsFind[':chat_kind'] = $chatKind;
+      }
+      if ($hasPlatform) {
+        $paramsFind[':platform'] = $platform;
+      }
+      if ($expectedUsername !== '') {
+        $paramsFind[':channel_username'] = $expectedUsername;
+      }
+      $stFind->execute($paramsFind);
+      $channelId = (int)($stFind->fetchColumn() ?: 0);
     }
 
     if ($channelId > 0) {
-      if ($hasChatKind) {
+      if ($hasChatKind && $hasPlatform) {
+        $st = $pdo->prepare("
+          UPDATE {$channels}
+          SET
+            binding_id = :binding_id,
+            chat_kind = :chat_kind,
+            platform = :platform,
+            channel_chat_id = NULL,
+            channel_username = :channel_username,
+            channel_title = '',
+            confirm_code = :confirm_code,
+            confirm_expires_at = :confirm_expires_at,
+            confirmed_at = NULL,
+            is_active = 1,
+            updated_at = :updated_at
+          WHERE id = :id
+          LIMIT 1
+        ");
+      } elseif ($hasChatKind) {
         $st = $pdo->prepare("
           UPDATE {$channels}
           SET
@@ -1560,9 +1867,17 @@ if (!function_exists('ymlb_module_code')) {
         ':id' => $channelId,
       ];
       if ($hasChatKind) $params[':chat_kind'] = $chatKind;
+      if ($hasPlatform) $params[':platform'] = $platform;
       $st->execute($params);
     } else {
-      if ($hasChatKind) {
+      if ($hasChatKind && $hasPlatform) {
+        $st = $pdo->prepare("
+          INSERT INTO {$channels}
+          (binding_id, chat_kind, platform, channel_chat_id, channel_username, channel_title, confirm_code, confirm_expires_at, confirmed_at, is_active, created_at, updated_at)
+          VALUES
+          (:binding_id, :chat_kind, :platform, NULL, :channel_username, '', :confirm_code, :confirm_expires_at, NULL, 1, :created_at, :updated_at)
+        ");
+      } elseif ($hasChatKind) {
         $st = $pdo->prepare("
           INSERT INTO {$channels}
           (binding_id, chat_kind, channel_chat_id, channel_username, channel_title, confirm_code, confirm_expires_at, confirmed_at, is_active, created_at, updated_at)
@@ -1586,29 +1901,17 @@ if (!function_exists('ymlb_module_code')) {
         ':updated_at' => $now,
       ];
       if ($hasChatKind) $params[':chat_kind'] = $chatKind;
+      if ($hasPlatform) $params[':platform'] = $platform;
       $st->execute($params);
       $channelId = (int)$pdo->lastInsertId();
     }
 
-    if ($chatModeEnabled) {
-      if ($hasChatKind) {
-        $stCleanup = $pdo->prepare("
-          DELETE FROM {$channels}
-          WHERE chat_kind = :chat_kind
-            AND id <> :id
-        ");
-        $stCleanup->execute([
-          ':chat_kind' => $chatKind,
-          ':id' => $channelId,
-        ]);
-      } else {
-        $stCleanup = $pdo->prepare("
-          DELETE FROM {$channels}
-          WHERE id <> :id
-        ");
-        $stCleanup->execute([':id' => $channelId]);
-      }
-    }
+    ymlb_channel_sites_sync(
+      $pdo,
+      $channelId,
+      ymlb_int_ids($input['site_ids'] ?? []),
+      ((int)($input['_allow_any_sites'] ?? 0) === 1)
+    );
 
     $targetWord = ($chatKind === 'chat') ? 'chat' : 'channel';
     return [
@@ -1616,6 +1919,7 @@ if (!function_exists('ymlb_module_code')) {
       'binding_id' => $bindingId,
       'requested_binding_id' => $requestedBindingId,
       'chat_kind' => $chatKind,
+      'platform' => $platform,
       'code' => $code,
       'expires_at' => $expiresAt,
       'instruction' => 'Publish /bind ' . $code . ' in the ' . $targetWord . ' where bot is admin.',
@@ -1630,6 +1934,7 @@ if (!function_exists('ymlb_module_code')) {
    */
   function ymlb_channel_generate_code(PDO $pdo, array $input): array
   {
+    $input['platform'] = 'tg';
     return ymlb_target_generate_code($pdo, $input, 'channel');
   }
 
@@ -1682,7 +1987,7 @@ if (!function_exists('ymlb_module_code')) {
    *
    * @return array<int,array<string,mixed>>
    */
-  function ymlb_targets_find_active_by_chat(PDO $pdo, string $chatId, string $chatKind = 'channel'): array
+  function ymlb_targets_find_active_by_chat(PDO $pdo, string $chatId, string $chatKind = 'channel', string $platform = 'tg'): array
   {
     $chatId = trim($chatId);
     if ($chatId === '') return [];
@@ -1690,17 +1995,22 @@ if (!function_exists('ymlb_module_code')) {
 
     $chatKind = strtolower(trim($chatKind));
     if ($chatKind !== 'chat') $chatKind = 'channel';
+    $platform = ymlb_platform_norm($platform);
 
     $channelsName = ymlb_table('channels');
     $channels = ymlb_qi($channelsName);
     $hasChatKind = ymlb_table_column_exists($pdo, $channelsName, 'chat_kind');
+    $hasPlatform = ymlb_table_column_exists($pdo, $channelsName, 'platform');
     $sql = "
-      SELECT id, binding_id, channel_chat_id, channel_username, channel_title, is_active, confirmed_at
+      SELECT id, binding_id, " . ($hasPlatform ? "platform," : "'tg' AS platform,") . " channel_chat_id, channel_username, channel_title, is_active, confirmed_at
       FROM {$channels}
       WHERE channel_chat_id = :chat_id
     ";
     if ($hasChatKind) {
       $sql .= " AND chat_kind = '" . $chatKind . "'";
+    }
+    if ($hasPlatform) {
+      $sql .= " AND platform = '" . $platform . "'";
     }
     $sql .= "
         AND is_active = 1
@@ -1718,9 +2028,9 @@ if (!function_exists('ymlb_module_code')) {
    *
    * @return array<int,array<string,mixed>>
    */
-  function ymlb_channels_find_active_by_chat(PDO $pdo, string $chatId): array
+  function ymlb_channels_find_active_by_chat(PDO $pdo, string $chatId, string $platform = 'tg'): array
   {
-    return ymlb_targets_find_active_by_chat($pdo, $chatId, 'channel');
+    return ymlb_targets_find_active_by_chat($pdo, $chatId, 'channel', $platform);
   }
 
   /**
@@ -1728,9 +2038,9 @@ if (!function_exists('ymlb_module_code')) {
    *
    * @return array<int,array<string,mixed>>
    */
-  function ymlb_chats_find_active_by_chat(PDO $pdo, string $chatId): array
+  function ymlb_chats_find_active_by_chat(PDO $pdo, string $chatId, string $platform = 'tg'): array
   {
-    return ymlb_targets_find_active_by_chat($pdo, $chatId, 'chat');
+    return ymlb_targets_find_active_by_chat($pdo, $chatId, 'chat', $platform);
   }
 
   /**
@@ -1738,9 +2048,9 @@ if (!function_exists('ymlb_module_code')) {
    *
    * @return array<string,mixed>|null
    */
-  function ymlb_channel_find_active_by_chat(PDO $pdo, string $chatId): ?array
+  function ymlb_channel_find_active_by_chat(PDO $pdo, string $chatId, string $platform = 'tg'): ?array
   {
-    $rows = ymlb_channels_find_active_by_chat($pdo, $chatId);
+    $rows = ymlb_channels_find_active_by_chat($pdo, $chatId, $platform);
     return isset($rows[0]) && is_array($rows[0]) ? $rows[0] : null;
   }
 
@@ -1749,9 +2059,9 @@ if (!function_exists('ymlb_module_code')) {
    *
    * @return array<string,mixed>|null
    */
-  function ymlb_chat_find_active_by_chat(PDO $pdo, string $chatId): ?array
+  function ymlb_chat_find_active_by_chat(PDO $pdo, string $chatId, string $platform = 'tg'): ?array
   {
-    $rows = ymlb_chats_find_active_by_chat($pdo, $chatId);
+    $rows = ymlb_chats_find_active_by_chat($pdo, $chatId, $platform);
     return isset($rows[0]) && is_array($rows[0]) ? $rows[0] : null;
   }
 
@@ -1760,13 +2070,14 @@ if (!function_exists('ymlb_module_code')) {
    *
    * @return array<string,mixed>|null
    */
-  function ymlb_target_confirm_from_text(PDO $pdo, string $text, string $chatId, string $chatUsername, string $chatTitle, string $chatKind = 'channel'): ?array
+  function ymlb_target_confirm_from_text(PDO $pdo, string $text, string $chatId, string $chatUsername, string $chatTitle, string $chatKind = 'channel', string $platform = 'tg'): ?array
   {
     $text = trim($text);
     if ($text === '') return null;
 
     $chatKind = strtolower(trim($chatKind));
     if ($chatKind !== 'chat') $chatKind = 'channel';
+    $platform = ymlb_platform_norm($platform);
 
     if (!preg_match('~(?:/bind\s+)?([A-Z0-9]{6})~i', $text, $m)) {
       return null;
@@ -1778,6 +2089,7 @@ if (!function_exists('ymlb_module_code')) {
     $channelsName = ymlb_table('channels');
     $channels = ymlb_qi($channelsName);
     $hasChatKind = ymlb_table_column_exists($pdo, $channelsName, 'chat_kind');
+    $hasPlatform = ymlb_table_column_exists($pdo, $channelsName, 'platform');
     $now = ymlb_now();
 
     $sqlFind = "
@@ -1787,6 +2099,9 @@ if (!function_exists('ymlb_module_code')) {
     ";
     if ($hasChatKind) {
       $sqlFind .= " AND chat_kind = '" . $chatKind . "'";
+    }
+    if ($hasPlatform) {
+      $sqlFind .= " AND platform = '" . $platform . "'";
     }
     $sqlFind .= "
         AND is_active = 1
@@ -1805,15 +2120,49 @@ if (!function_exists('ymlb_module_code')) {
       return null;
     }
 
-    $expectedUsername = ltrim(trim((string)($row['channel_username'] ?? '')), '@');
-    $actualUsername = ltrim(trim($chatUsername), '@');
-    if ($expectedUsername !== '' && strcasecmp($expectedUsername, $actualUsername) !== 0) {
+    $expectedIdentity = (string)($row['channel_username'] ?? '');
+    if (!ymlb_target_identity_matches($expectedIdentity, $chatUsername, $chatTitle)) {
       return null;
     }
 
     $id = (int)($row['id'] ?? 0);
     if ($id <= 0) return null;
     $bindingId = (int)($row['binding_id'] ?? 0);
+
+    return ymlb_target_confirm_row($pdo, $id, $bindingId, $chatId, $chatUsername, $chatTitle, $chatKind, $channels, $hasChatKind, $code, $platform, $hasPlatform);
+  }
+
+  /**
+   * ymlb_target_identity_matches()
+   * Accepts either public username or, as a fallback, exact title match.
+   */
+  function ymlb_target_identity_matches(string $expectedIdentity, string $actualUsername, string $actualTitle): bool
+  {
+    $expectedIdentity = ltrim(trim($expectedIdentity), '@');
+    if ($expectedIdentity === '') return true;
+
+    $actualUsername = ltrim(trim($actualUsername), '@');
+    if ($actualUsername !== '' && strcasecmp($expectedIdentity, $actualUsername) === 0) {
+      return true;
+    }
+
+    $actualTitle = trim($actualTitle);
+    if ($actualTitle !== '' && strcasecmp($expectedIdentity, $actualTitle) === 0) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * ymlb_target_confirm_row()
+   *
+   * @return array<string,mixed>
+   */
+  function ymlb_target_confirm_row(PDO $pdo, int $id, int $bindingId, string $chatId, string $chatUsername, string $chatTitle, string $chatKind, string $channels, bool $hasChatKind, string $code = '', string $platform = 'tg', bool $hasPlatform = false): array
+  {
+    $platform = ymlb_platform_norm($platform);
+    $now = ymlb_now();
 
     // Keep one active row per (binding, chat) on re-bind.
     if ($bindingId > 0 && $chatId !== '') {
@@ -1825,6 +2174,9 @@ if (!function_exists('ymlb_module_code')) {
       ";
       if ($hasChatKind) {
         $sqlCleanup .= " AND chat_kind = '" . $chatKind . "'";
+      }
+      if ($hasPlatform) {
+        $sqlCleanup .= " AND platform = '" . $platform . "'";
       }
       $stCleanup = $pdo->prepare($sqlCleanup);
       $stCleanup->execute([
@@ -1858,8 +2210,70 @@ if (!function_exists('ymlb_module_code')) {
       'channel_id' => $id,
       'binding_id' => $bindingId,
       'chat_kind' => $chatKind,
+      'platform' => $platform,
       'code' => $code,
     ];
+  }
+
+  /**
+   * ymlb_target_confirm_pending_by_identity()
+   *
+   * @return array<string,mixed>|null
+   */
+  function ymlb_target_confirm_pending_by_identity(PDO $pdo, string $chatId, string $chatUsername, string $chatTitle, string $chatKind = 'channel', string $platform = 'tg'): ?array
+  {
+    $chatId = trim($chatId);
+    $chatUsername = trim($chatUsername);
+    $chatTitle = trim($chatTitle);
+    if ($chatId === '') return null;
+    if ($chatUsername === '' && $chatTitle === '') return null;
+
+    $chatKind = strtolower(trim($chatKind));
+    if ($chatKind !== 'chat') $chatKind = 'channel';
+    $platform = ymlb_platform_norm($platform);
+
+    ymlb_ensure_schema($pdo);
+    $channelsName = ymlb_table('channels');
+    $channels = ymlb_qi($channelsName);
+    $hasChatKind = ymlb_table_column_exists($pdo, $channelsName, 'chat_kind');
+    $hasPlatform = ymlb_table_column_exists($pdo, $channelsName, 'platform');
+    $now = ymlb_now();
+
+    $sql = "
+      SELECT id, binding_id, channel_username
+      FROM {$channels}
+      WHERE is_active = 1
+        AND confirmed_at IS NULL
+        AND (confirm_expires_at IS NULL OR confirm_expires_at >= :now)
+    ";
+    if ($hasChatKind) {
+      $sql .= " AND chat_kind = '" . $chatKind . "'";
+    }
+    if ($hasPlatform) {
+      $sql .= " AND platform = '" . $platform . "'";
+    }
+    $sql .= " ORDER BY id DESC";
+
+    $st = $pdo->prepare($sql);
+    $st->execute([':now' => $now]);
+    while ($row = $st->fetch(PDO::FETCH_ASSOC)) {
+      if (!is_array($row)) {
+        continue;
+      }
+      $expectedIdentity = (string)($row['channel_username'] ?? '');
+      if (!ymlb_target_identity_matches($expectedIdentity, $chatUsername, $chatTitle)) {
+        continue;
+      }
+
+      $id = (int)($row['id'] ?? 0);
+      if ($id <= 0) {
+        continue;
+      }
+      $bindingId = (int)($row['binding_id'] ?? 0);
+      return ymlb_target_confirm_row($pdo, $id, $bindingId, $chatId, $chatUsername, $chatTitle, $chatKind, $channels, $hasChatKind, '', $platform, $hasPlatform);
+    }
+
+    return null;
   }
 
   /**
@@ -1867,9 +2281,9 @@ if (!function_exists('ymlb_module_code')) {
    *
    * @return array<string,mixed>|null
    */
-  function ymlb_channel_confirm_from_text(PDO $pdo, string $text, string $chatId, string $chatUsername, string $chatTitle): ?array
+  function ymlb_channel_confirm_from_text(PDO $pdo, string $text, string $chatId, string $chatUsername, string $chatTitle, string $platform = 'tg'): ?array
   {
-    return ymlb_target_confirm_from_text($pdo, $text, $chatId, $chatUsername, $chatTitle, 'channel');
+    return ymlb_target_confirm_from_text($pdo, $text, $chatId, $chatUsername, $chatTitle, 'channel', $platform);
   }
 
   /**
@@ -1877,9 +2291,85 @@ if (!function_exists('ymlb_module_code')) {
    *
    * @return array<string,mixed>|null
    */
-  function ymlb_chat_confirm_from_text(PDO $pdo, string $text, string $chatId, string $chatUsername, string $chatTitle): ?array
+  function ymlb_chat_confirm_from_text(PDO $pdo, string $text, string $chatId, string $chatUsername, string $chatTitle, string $platform = 'tg'): ?array
   {
-    return ymlb_target_confirm_from_text($pdo, $text, $chatId, $chatUsername, $chatTitle, 'chat');
+    return ymlb_target_confirm_from_text($pdo, $text, $chatId, $chatUsername, $chatTitle, 'chat', $platform);
+  }
+
+  /**
+   * ymlb_process_my_chat_member()
+   *
+   * @param array<string,mixed> $memberUpdate
+   * @param array<string,mixed> $settings
+   * @return array<string,mixed>
+   */
+  function ymlb_process_my_chat_member(PDO $pdo, array $settings, array $memberUpdate): array
+  {
+    $chat = (array)($memberUpdate['chat'] ?? []);
+    $newChatMember = (array)($memberUpdate['new_chat_member'] ?? []);
+    $oldChatMember = (array)($memberUpdate['old_chat_member'] ?? []);
+    $chatId = trim((string)($chat['id'] ?? ''));
+    $chatType = strtolower(trim((string)($chat['type'] ?? '')));
+    $chatUsername = ltrim(trim((string)($chat['username'] ?? '')), '@');
+    $chatTitle = trim((string)($chat['title'] ?? ''));
+    $newStatus = strtolower(trim((string)($newChatMember['status'] ?? '')));
+    $oldStatus = strtolower(trim((string)($oldChatMember['status'] ?? '')));
+
+    if ($chatId === '') {
+      return ['handled' => false, 'reason' => 'member_chat_missing'];
+    }
+
+    $targetKind = ($chatType === 'group' || $chatType === 'supergroup') ? 'chat' : 'channel';
+    ymlb_stage_log('pipeline_member', 'info', [
+      'stage' => 'start',
+      'target_kind' => $targetKind,
+      'chat_id' => $chatId,
+      'chat_type' => $chatType,
+      'chat_username' => $chatUsername,
+      'chat_title' => $chatTitle,
+      'old_status' => $oldStatus,
+      'new_status' => $newStatus,
+    ]);
+
+    if (!in_array($newStatus, ['member', 'administrator'], true)) {
+      ymlb_stage_log('pipeline_member', 'info', [
+        'stage' => 'skip',
+        'target_kind' => $targetKind,
+        'chat_id' => $chatId,
+        'reason' => 'status_not_bindable',
+      ]);
+      return ['handled' => false, 'reason' => 'status_not_bindable'];
+    }
+
+    $confirm = ymlb_target_confirm_pending_by_identity($pdo, $chatId, $chatUsername, $chatTitle, $targetKind);
+    if (!is_array($confirm)) {
+      ymlb_stage_log('pipeline_member', 'info', [
+        'stage' => 'pending_lookup',
+        'target_kind' => $targetKind,
+        'chat_id' => $chatId,
+        'reason' => 'pending_not_found',
+      ]);
+      return ['handled' => false, 'reason' => 'pending_not_found'];
+    }
+
+    ymlb_stage_log('pipeline_member', 'info', [
+      'stage' => 'channel_confirmed',
+      'target_kind' => $targetKind,
+      'chat_id' => $chatId,
+      'channel_id' => (int)($confirm['channel_id'] ?? 0),
+      'binding_id' => (int)($confirm['binding_id'] ?? 0),
+    ]);
+
+    $token = trim((string)($settings['bot_token'] ?? ''));
+    if ($token !== '' && $targetKind === 'chat') {
+      tg_send_message($token, $chatId, 'Chat confirmed and linked.');
+    }
+
+    return [
+      'handled' => true,
+      'reason' => 'channel_confirmed_member_update',
+      'channel_id' => (int)($confirm['channel_id'] ?? 0),
+    ];
   }
 
   /**
@@ -1953,6 +2443,177 @@ if (!function_exists('ymlb_module_code')) {
   }
 
   /**
+   * ymlb_channel_site_ids()
+   *
+   * @return array<int,int>
+   */
+  function ymlb_channel_site_ids(PDO $pdo, int $channelId, bool $onlyActive = false): array
+  {
+    if ($channelId <= 0) return [];
+    ymlb_ensure_schema($pdo);
+
+    $channelSites = ymlb_qi(ymlb_table('channel_sites'));
+    $sites = ymlb_qi(ymlb_table('sites'));
+    $sql = "
+      SELECT cs.site_id
+      FROM {$channelSites} cs
+      JOIN {$sites} s ON s.id = cs.site_id
+      WHERE cs.channel_id = :channel_id
+    ";
+    if ($onlyActive) {
+      $sql .= " AND s.is_active = 1";
+    }
+    $sql .= " ORDER BY cs.site_id ASC";
+
+    $st = $pdo->prepare($sql);
+    $st->execute([':channel_id' => $channelId]);
+    $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+    if (!is_array($rows)) return [];
+
+    $out = [];
+    foreach ($rows as $row) {
+      $siteId = (int)($row['site_id'] ?? 0);
+      if ($siteId > 0) $out[$siteId] = $siteId;
+    }
+
+    return array_values($out);
+  }
+
+  /**
+   * ymlb_channel_sites_sync()
+   *
+   * @param array<int,int> $siteIds
+   */
+  function ymlb_channel_sites_sync(PDO $pdo, int $channelId, array $siteIds, bool $allowAnySites = false): void
+  {
+    if ($channelId <= 0) {
+      throw new RuntimeException('Target is required');
+    }
+
+    ymlb_ensure_schema($pdo);
+    $chat = ymlb_channel_get($pdo, $channelId);
+    if (!$chat) {
+      throw new RuntimeException('Target not found');
+    }
+
+    $bindingId = (int)($chat['binding_id'] ?? 0);
+    $siteIds = ymlb_int_ids($siteIds);
+    $allowedSites = $allowAnySites
+      ? ymlb_sites_list($pdo)
+      : ymlb_sites_by_binding($pdo, $bindingId, false);
+    $allowedMap = [];
+    foreach ($allowedSites as $site) {
+      $siteId = (int)($site['id'] ?? 0);
+      if ($siteId > 0) {
+        $allowedMap[$siteId] = true;
+      }
+    }
+
+    foreach ($siteIds as $siteId) {
+      if (!isset($allowedMap[$siteId])) {
+        throw new RuntimeException($allowAnySites
+          ? 'Selected site not found'
+          : 'Selected site does not belong to this target owner');
+      }
+    }
+
+    $channelSites = ymlb_qi(ymlb_table('channel_sites'));
+    $pdo->prepare("DELETE FROM {$channelSites} WHERE channel_id = :channel_id")
+      ->execute([':channel_id' => $channelId]);
+
+    if (!$siteIds) {
+      return;
+    }
+
+    $st = $pdo->prepare("
+      INSERT INTO {$channelSites} (channel_id, site_id, created_at)
+      VALUES (:channel_id, :site_id, :created_at)
+    ");
+    $now = ymlb_now();
+    foreach ($siteIds as $siteId) {
+      $st->execute([
+        ':channel_id' => $channelId,
+        ':site_id' => $siteId,
+        ':created_at' => $now,
+      ]);
+    }
+  }
+
+  /**
+   * ymlb_chat_rows_attach_sites()
+   *
+   * @param array<int,array<string,mixed>> $rows
+   * @return array<int,array<string,mixed>>
+   */
+  function ymlb_chat_rows_attach_sites(PDO $pdo, array $rows): array
+  {
+    if (!$rows) return [];
+    ymlb_ensure_schema($pdo);
+
+    $channelIds = [];
+    foreach ($rows as $row) {
+      $channelId = (int)($row['id'] ?? 0);
+      if ($channelId > 0) {
+        $channelIds[$channelId] = $channelId;
+      }
+    }
+    if (!$channelIds) return $rows;
+
+    $channelSites = ymlb_qi(ymlb_table('channel_sites'));
+    $sites = ymlb_qi(ymlb_table('sites'));
+    $bindings = ymlb_qi(ymlb_table('bindings'));
+    $in = implode(',', array_map('intval', array_values($channelIds)));
+    $st = $pdo->query("
+      SELECT
+        cs.channel_id,
+        s.id AS site_id,
+        s.binding_id,
+        s.name,
+        s.clid,
+        s.is_active,
+        b.title AS binding_title
+      FROM {$channelSites} cs
+      JOIN {$sites} s ON s.id = cs.site_id
+      LEFT JOIN {$bindings} b ON b.id = s.binding_id
+      WHERE cs.channel_id IN ({$in})
+      ORDER BY s.id ASC
+    ");
+    $linkedRows = $st ? $st->fetchAll(PDO::FETCH_ASSOC) : [];
+    $map = [];
+    if (is_array($linkedRows)) {
+      foreach ($linkedRows as $row) {
+        $channelId = (int)($row['channel_id'] ?? 0);
+        if ($channelId <= 0) continue;
+        if (!isset($map[$channelId])) {
+          $map[$channelId] = [];
+        }
+        $map[$channelId][] = $row;
+      }
+    }
+
+    foreach ($rows as &$row) {
+      $channelId = (int)($row['id'] ?? 0);
+      $linked = $map[$channelId] ?? [];
+      $siteIds = [];
+      $siteTitles = [];
+      foreach ($linked as $linkedRow) {
+        $siteId = (int)($linkedRow['site_id'] ?? 0);
+        if ($siteId <= 0) continue;
+        $siteIds[] = $siteId;
+        $siteTitle = trim((string)($linkedRow['name'] ?? '')) . ' [' . trim((string)($linkedRow['clid'] ?? '')) . ']';
+        $bindingTitle = trim((string)($linkedRow['binding_title'] ?? ''));
+        $siteTitles[] = ($bindingTitle !== '' ? ($bindingTitle . ' / ' . $siteTitle) : $siteTitle);
+      }
+      $row['linked_sites_explicit'] = ($siteIds ? 1 : 0);
+      $row['linked_site_ids'] = $siteIds;
+      $row['linked_site_titles'] = $siteTitles;
+    }
+    unset($row);
+
+    return $rows;
+  }
+
+  /**
    * ymlb_sites_by_binding()
    *
    * @return array<int,array<string,mixed>>
@@ -1976,6 +2637,43 @@ if (!function_exists('ymlb_module_code')) {
     $st = $pdo->prepare($sql);
     $st->execute([':binding_id' => $bindingId]);
     $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+    return is_array($rows) ? $rows : [];
+  }
+
+  /**
+   * ymlb_sites_by_ids()
+   *
+   * @param array<int,int> $siteIds
+   * @return array<int,array<string,mixed>>
+   */
+  function ymlb_sites_by_ids(PDO $pdo, array $siteIds, bool $onlyActive = true): array
+  {
+    $siteIds = ymlb_int_ids($siteIds);
+    if (!$siteIds) return [];
+    ymlb_ensure_schema($pdo);
+
+    $sites = ymlb_qi(ymlb_table('sites'));
+    $bindings = ymlb_qi(ymlb_table('bindings'));
+    $in = implode(',', array_map('intval', $siteIds));
+    $sql = "
+      SELECT
+        s.id,
+        s.binding_id,
+        s.name,
+        s.clid,
+        s.is_active,
+        b.title AS binding_title
+      FROM {$sites} s
+      LEFT JOIN {$bindings} b ON b.id = s.binding_id
+      WHERE s.id IN ({$in})
+    ";
+    if ($onlyActive) {
+      $sql .= " AND s.is_active = 1";
+    }
+    $sql .= " ORDER BY s.id ASC";
+
+    $st = $pdo->query($sql);
+    $rows = $st ? $st->fetchAll(PDO::FETCH_ASSOC) : [];
     return is_array($rows) ? $rows : [];
   }
 
@@ -2089,6 +2787,7 @@ if (!function_exists('ymlb_module_code')) {
       $payload['settings'] = $settings;
       $payload['listener_url'] = ymlb_listener_url($settings);
       $payload['chat_listener_url'] = ymlb_chat_listener_url($settings);
+      $payload['max_listener_url'] = ymlb_max_listener_url($settings);
       $payload['crm_users'] = ymlb_crm_users_list($pdo);
     }
 
@@ -3081,10 +3780,322 @@ if (!function_exists('ymlb_module_code')) {
   }
 
   /**
+   * ymlb_ord_result()
+   *
+   * @param array<string,mixed> $extra
+   * @return array<string,mixed>
+   */
+  function ymlb_ord_result(bool $ok, string $reason, string $message, array $extra = []): array
+  {
+    return array_merge([
+      'ok' => $ok,
+      'reason' => $reason,
+      'message' => $message,
+      'token' => '',
+      'http_code' => 0,
+      'raw_preview' => '',
+      'curl_error' => '',
+    ], $extra);
+  }
+
+  /**
+   * ymlb_ord_last_result()
+   *
+   * @param array<string,mixed>|null $set
+   * @return array<string,mixed>
+   */
+  function ymlb_ord_last_result(?array $set = null): array
+  {
+    static $last = [];
+    if ($set !== null) {
+      $last = $set;
+    }
+    return is_array($last) ? $last : [];
+  }
+
+  /**
+   * ymlb_ord_error_message()
+   */
+  function ymlb_ord_error_message(array $result): string
+  {
+    $message = trim((string)($result['message'] ?? ''));
+    return $message !== '' ? $message : 'Ошибка ERID: не удалось получить ERID.';
+  }
+
+  /**
+   * ymlb_ord_failure_message()
+   */
+  function ymlb_ord_failure_message(array $result, bool $oauthLikelyExpired = false): string
+  {
+    $message = trim((string)($result['message'] ?? ''));
+    if ($message !== '') return $message;
+
+    $reason = trim((string)($result['reason'] ?? ''));
+    if ($oauthLikelyExpired && ($reason === '' || $reason === 'oauth_empty' || $reason === 'oauth_rejected' || $reason === 'http_or_body_invalid')) {
+      return 'Ошибка ERID: OAuth-ключ владельца этой площадки, вероятно, истёк. Обновите OAuth и повторите.';
+    }
+
+    if ($reason === 'media_required') {
+      return 'Ошибка ERID: у товара не найдена подходящая картинка, ORD требует media_data.';
+    }
+    if ($reason === 'oauth_empty') {
+      return 'Ошибка ERID: для этой площадки не найден OAuth-ключ владельца.';
+    }
+    if ($reason === 'oauth_rejected') {
+      return 'Ошибка ERID: ORD отклонил OAuth-ключ владельца этой площадки.';
+    }
+
+    return 'Ошибка ERID: не удалось получить ERID для этой площадки.';
+  }
+
+  /**
+   * ymlb_target_site_label()
+   */
+  function ymlb_target_site_label(array $site): string
+  {
+    $siteName = trim((string)($site['name'] ?? ''));
+    $bindingTitle = trim((string)($site['binding_title'] ?? ''));
+    $clid = trim((string)($site['clid'] ?? ''));
+
+    $label = ($siteName !== '' ? $siteName : 'Площадка');
+    if ($bindingTitle !== '') {
+      $label = $bindingTitle . ' / ' . $label;
+    }
+    if ($clid !== '') {
+      $label .= ' [CLID ' . $clid . ']';
+    }
+
+    return $label;
+  }
+
+  /**
+   * ymlb_target_erid_failure_text()
+   *
+   * @param array<int,array<string,mixed>> $failures
+   */
+  function ymlb_target_erid_failure_text(array $failures): string
+  {
+    if (!$failures) return '';
+
+    $lines = ['Не удалось получить ERID для некоторых площадок:'];
+    foreach ($failures as $failure) {
+      $label = ymlb_target_site_label($failure);
+      $message = trim((string)($failure['message'] ?? ''));
+      if ($message === '') {
+        $message = 'Ошибка ERID: не удалось получить ERID для этой площадки.';
+      }
+      $lines[] = '- ' . $label . ': ' . $message;
+    }
+
+    return implode("\n", $lines);
+  }
+
+  /**
+   * ymlb_ord_create_erid_result()
+   *
+   * @return array<string,mixed>
+   */
+  function ymlb_ord_create_erid_result(string $clid, string $vid, string $oauthToken, string $textOrd, string $mediaLink): array
+  {
+    $clid = trim($clid);
+    $vid = trim($vid);
+    $oauthToken = trim($oauthToken);
+    $mediaLink = trim($mediaLink);
+
+    if ($clid === '') {
+      ymlb_stage_log('ord_api', 'warn', [
+        'stage' => 'validate',
+        'reason' => 'clid_empty',
+        'clid' => '',
+      ]);
+      return ymlb_ord_result(false, 'clid_empty', 'Ошибка ERID: у площадки не заполнен CLID.');
+    }
+    if ($oauthToken === '') {
+      ymlb_stage_log('ord_api', 'warn', [
+        'stage' => 'validate',
+        'reason' => 'oauth_empty',
+        'clid' => $clid,
+      ]);
+      return ymlb_ord_result(false, 'oauth_empty', 'Ошибка ERID: OAuth-ключ не найден для этой площадки.');
+    }
+    if (!function_exists('curl_init')) {
+      ymlb_stage_log('ord_api', 'error', [
+        'stage' => 'validate',
+        'reason' => 'curl_missing',
+        'clid' => $clid,
+      ]);
+      return ymlb_ord_result(false, 'curl_missing', 'Ошибка ERID: в PHP недоступен cURL.');
+    }
+    if ($mediaLink === '') {
+      ymlb_stage_log('ord_api', 'warn', [
+        'stage' => 'validate',
+        'reason' => 'media_required',
+        'clid' => $clid,
+      ]);
+      return ymlb_ord_result(false, 'media_required', 'Ошибка ERID: у товара не найдена картинка, поэтому ERID создать нельзя.');
+    }
+
+    $textOrd = trim($textOrd);
+    if ($textOrd === '') $textOrd = 'Товар';
+
+    $payload = [
+      'clid' => $clid,
+      'form' => 'text-graphic-block',
+      'text_data' => [
+        'Яндекс Маркет товар ' . $textOrd . '_' . $vid,
+      ],
+      'media_data' => [[
+        'media_url' => $mediaLink,
+        'media_url_file_type' => 'image',
+        'description' => $textOrd,
+      ]],
+      'description' => $textOrd,
+    ];
+
+    $json = json_encode($payload, JSON_UNESCAPED_UNICODE);
+    if (!is_string($json) || $json === '') {
+      ymlb_stage_log('ord_api', 'error', [
+        'stage' => 'prepare_payload',
+        'reason' => 'json_encode_failed',
+        'clid' => $clid,
+      ]);
+      return ymlb_ord_result(false, 'json_encode_failed', 'Ошибка ERID: не удалось подготовить запрос к ORD.');
+    }
+
+    $ch = curl_init('https://distribution.yandex.net/api/v2/creatives/');
+    if (!$ch) {
+      ymlb_stage_log('ord_api', 'error', [
+        'stage' => 'request',
+        'reason' => 'curl_init_failed',
+        'clid' => $clid,
+      ]);
+      return ymlb_ord_result(false, 'curl_init_failed', 'Ошибка ERID: не удалось инициализировать cURL-запрос.');
+    }
+
+    curl_setopt_array($ch, [
+      CURLOPT_POST => true,
+      CURLOPT_POSTFIELDS => $json,
+      CURLOPT_RETURNTRANSFER => true,
+      CURLOPT_TIMEOUT => 20,
+      CURLOPT_HTTPHEADER => [
+        'Authorization: OAuth ' . $oauthToken,
+        'Content-Type: application/json',
+      ],
+      CURLOPT_SSL_VERIFYPEER => false,
+    ]);
+
+    ymlb_stage_log('ord_api', 'info', [
+      'stage' => 'request',
+      'clid' => $clid,
+      'has_media' => 1,
+      'text_len' => strlen($textOrd),
+      'payload_preview' => ymlb_log_excerpt($json, 2000),
+    ]);
+
+    $raw = curl_exec($ch);
+    $http = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlErr = (string)curl_error($ch);
+    curl_close($ch);
+
+    if (!is_string($raw) || $raw === '' || $http < 200 || $http >= 300) {
+      $rawPreview = ymlb_log_excerpt((string)$raw, 2000);
+      $message = ($curlErr !== '')
+        ? ('Ошибка ERID: запрос к ORD не выполнен. ' . $curlErr)
+        : ('Ошибка ERID: ORD вернул HTTP ' . $http . '.');
+      $reason = 'http_or_body_invalid';
+      $data = json_decode((string)$raw, true);
+      if ($http === 401 || $http === 403) {
+        $reason = 'oauth_rejected';
+        $apiMessage = '';
+        if (is_array($data)) {
+          $apiMessage = trim((string)($data['data'] ?? ''));
+          if ($apiMessage === '' && !empty($data['errors'][0]['message'])) {
+            $apiMessage = trim((string)$data['errors'][0]['message']);
+          }
+        }
+        $message = 'Ошибка ERID: ORD отклонил OAuth-ключ владельца этой площадки.';
+        if ($apiMessage !== '') {
+          $message .= ' ' . $apiMessage;
+        }
+      } elseif (is_array($data)) {
+        foreach ((array)($data['data'] ?? []) as $item) {
+          if (!is_array($item)) continue;
+          if (trim((string)($item['field'] ?? '')) === 'media_data') {
+            $reason = 'media_required';
+            $message = 'Ошибка ERID: у товара не найдена подходящая картинка, ORD требует media_data.';
+            break;
+          }
+        }
+      }
+
+      ymlb_stage_log('ord_api', 'warn', [
+        'stage' => 'response',
+        'reason' => $reason,
+        'clid' => $clid,
+        'http_code' => $http,
+        'curl_error' => $curlErr,
+        'raw_preview' => $rawPreview,
+      ]);
+      return ymlb_ord_result(false, $reason, $message, [
+        'http_code' => $http,
+        'raw_preview' => $rawPreview,
+        'curl_error' => $curlErr,
+      ]);
+    }
+
+    $data = json_decode($raw, true);
+    if (!is_array($data)) {
+      ymlb_stage_log('ord_api', 'warn', [
+        'stage' => 'response',
+        'reason' => 'json_decode_failed',
+        'clid' => $clid,
+        'http_code' => $http,
+        'raw_preview' => ymlb_log_excerpt((string)$raw, 2000),
+      ]);
+      return ymlb_ord_result(false, 'json_decode_failed', 'Ошибка ERID: ORD вернул непонятный ответ.', [
+        'http_code' => $http,
+        'raw_preview' => ymlb_log_excerpt((string)$raw, 2000),
+      ]);
+    }
+
+    $token = trim((string)($data['data']['token'] ?? ''));
+    if ($token === '') {
+      $token = trim((string)($data['token'] ?? ''));
+    }
+    if ($token === '') {
+      ymlb_stage_log('ord_api', 'warn', [
+        'stage' => 'response',
+        'reason' => 'token_missing',
+        'clid' => $clid,
+        'raw_preview' => ymlb_log_excerpt((string)$raw, 2000),
+      ]);
+      return ymlb_ord_result(false, 'token_missing', 'Ошибка ERID: ORD не вернул токен ERID.', [
+        'http_code' => $http,
+        'raw_preview' => ymlb_log_excerpt((string)$raw, 2000),
+      ]);
+    }
+
+    ymlb_stage_log('ord_api', 'info', [
+      'stage' => 'response',
+      'reason' => 'token_ok',
+      'clid' => $clid,
+    ]);
+
+    return ymlb_ord_result(true, 'token_ok', '', [
+      'token' => $token,
+      'http_code' => $http,
+    ]);
+  }
+
+  /**
    * ymlb_ord_create_erid()
    */
   function ymlb_ord_create_erid(string $clid, string $vid, string $oauthToken, string $textOrd, string $mediaLink): ?string
   {
+    $result = ymlb_ord_create_erid_result($clid, $vid, $oauthToken, $textOrd, $mediaLink);
+    ymlb_ord_last_result($result);
+    return !empty($result['ok']) ? trim((string)($result['token'] ?? '')) : null;
+
     $clid = trim($clid);
     $vid = trim($vid);
     $oauthToken = trim($oauthToken);
@@ -3409,6 +4420,710 @@ if (!function_exists('ymlb_module_code')) {
   }
 
   /**
+   * ymlb_max_http_json()
+   *
+   * @param array<int,string> $headers
+   * @param array<string,mixed>|null $payload
+   * @return array<string,mixed>
+   */
+  function ymlb_max_http_json(string $method, string $url, array $headers = [], ?array $payload = null, int $timeout = 20): array
+  {
+    $method = strtoupper(trim($method));
+    if ($method === '') $method = 'GET';
+
+    $url = trim($url);
+    if ($url === '') {
+      return ['ok' => false, 'error' => 'URL_EMPTY', 'http_code' => 0, 'json' => [], 'raw' => ''];
+    }
+
+    $httpCode = 0;
+    $raw = '';
+    $jsonPayload = '';
+    if ($payload !== null) {
+      $jsonPayload = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+      if (!is_string($jsonPayload)) $jsonPayload = '{}';
+    }
+
+    if (function_exists('curl_init')) {
+      $ch = curl_init($url);
+      if (!$ch) {
+        return ['ok' => false, 'error' => 'CURL_INIT_FAILED', 'http_code' => 0, 'json' => [], 'raw' => ''];
+      }
+
+      $requestHeaders = array_merge(['Accept: application/json'], $headers);
+      if ($payload !== null) {
+        $requestHeaders[] = 'Content-Type: application/json';
+      }
+
+      $opts = [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => $timeout > 0 ? $timeout : 20,
+        CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_HTTPHEADER => $requestHeaders,
+        CURLOPT_CUSTOMREQUEST => $method,
+      ];
+      if ($payload !== null) {
+        $opts[CURLOPT_POSTFIELDS] = $jsonPayload;
+      }
+      curl_setopt_array($ch, $opts);
+
+      $result = curl_exec($ch);
+      $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+      $curlError = trim((string)curl_error($ch));
+      curl_close($ch);
+
+      if ($result === false) {
+        return ['ok' => false, 'error' => 'CURL_ERROR', 'description' => $curlError, 'http_code' => $httpCode, 'json' => [], 'raw' => ''];
+      }
+
+      $raw = (string)$result;
+    } else {
+      $headersTxt = "Accept: application/json\r\n";
+      foreach ($headers as $header) {
+        $headersTxt .= trim((string)$header) . "\r\n";
+      }
+      if ($payload !== null) {
+        $headersTxt .= "Content-Type: application/json\r\n";
+      }
+
+      $ctx = stream_context_create([
+        'http' => [
+          'method' => $method,
+          'header' => $headersTxt,
+          'timeout' => $timeout > 0 ? $timeout : 20,
+          'content' => $payload !== null ? $jsonPayload : '',
+          'ignore_errors' => true,
+        ],
+      ]);
+      $result = @file_get_contents($url, false, $ctx);
+      $meta = $http_response_header ?? [];
+      if (is_array($meta) && isset($meta[0]) && preg_match('~\s(\d{3})\s~', (string)$meta[0], $m)) {
+        $httpCode = (int)$m[1];
+      }
+      if ($result === false) {
+        return ['ok' => false, 'error' => 'HTTP_ERROR', 'http_code' => $httpCode, 'json' => [], 'raw' => ''];
+      }
+
+      $raw = (string)$result;
+    }
+
+    $json = json_decode($raw, true);
+    if (!is_array($json)) $json = [];
+
+    return [
+      'ok' => true,
+      'http_code' => $httpCode,
+      'json' => $json,
+      'raw' => $raw,
+    ];
+  }
+
+  /**
+   * ymlb_max_extract_error()
+   */
+  function ymlb_max_extract_error(array $res): string
+  {
+    $json = (array)($res['json'] ?? []);
+    $err = trim((string)($json['message'] ?? $json['error'] ?? $res['description'] ?? $res['error'] ?? ''));
+    if ($err === '') {
+      $httpCode = (int)($res['http_code'] ?? 0);
+      if ($httpCode > 0) $err = 'HTTP_' . $httpCode;
+    }
+    return $err !== '' ? $err : 'MAX_ERROR';
+  }
+
+  /**
+   * ymlb_max_api_version()
+   */
+  function ymlb_max_api_version(): string
+  {
+    return '1.2.5';
+  }
+
+  /**
+   * ymlb_max_api_key_normalize()
+   */
+  function ymlb_max_api_key_normalize(string $apiKey): string
+  {
+    $apiKey = trim($apiKey);
+    if (stripos($apiKey, 'Bearer ') === 0) {
+      $apiKey = trim((string)substr($apiKey, 7));
+    }
+    if (stripos($apiKey, 'OAuth ') === 0) {
+      $apiKey = trim((string)substr($apiKey, 6));
+    }
+    return $apiKey;
+  }
+
+  /**
+   * ymlb_max_extract_message()
+   *
+   * @return array<string,mixed>
+   */
+  function ymlb_max_extract_message(array $payload): array
+  {
+    $updateType = trim((string)($payload['update_type'] ?? $payload['event_type'] ?? ''));
+
+    $message = [];
+    if (isset($payload['message']) && is_array($payload['message'])) {
+      $message = (array)$payload['message'];
+    } elseif (isset($payload['data']['message']) && is_array($payload['data']['message'])) {
+      $message = (array)$payload['data']['message'];
+    } elseif (isset($payload['data']) && is_array($payload['data'])) {
+      $message = (array)$payload['data'];
+    }
+    if (!$message) return [];
+
+    $body = (array)($message['body'] ?? []);
+    $recipient = (array)($message['recipient'] ?? []);
+    $recipientChat = (array)($recipient['chat'] ?? []);
+    $sender = (array)($message['sender'] ?? $message['from'] ?? []);
+    $chatId = trim((string)(
+      $recipient['chat_id']
+      ?? $recipient['id']
+      ?? $recipientChat['chat_id']
+      ?? $recipientChat['id']
+      ?? $message['chat_id']
+      ?? $payload['chat_id']
+      ?? ''
+    ));
+
+    return [
+      'update_type' => $updateType,
+      'chat_id' => $chatId,
+      'chat_title' => trim((string)($recipientChat['title'] ?? $recipient['title'] ?? $payload['chat_title'] ?? '')),
+      'chat_type' => trim((string)($recipientChat['type'] ?? $recipient['type'] ?? $payload['chat_type'] ?? '')),
+      'message_id' => trim((string)($message['message_id'] ?? $message['id'] ?? $payload['message_id'] ?? '')),
+      'message_text' => trim((string)($body['text'] ?? $message['text'] ?? '')),
+      'from_id' => trim((string)($sender['user_id'] ?? $sender['id'] ?? '')),
+      'from_name' => trim((string)($sender['name'] ?? $sender['display_name'] ?? $sender['username'] ?? '')),
+      'sender_type' => trim((string)($sender['type'] ?? $message['sender_type'] ?? 'user')),
+      'message' => $message,
+      'payload' => $payload,
+    ];
+  }
+
+  /**
+   * ymlb_max_is_bot_sender()
+   */
+  function ymlb_max_is_bot_sender(array $meta): bool
+  {
+    $type = strtolower(trim((string)($meta['sender_type'] ?? '')));
+    return ($type === 'bot');
+  }
+
+  /**
+   * ymlb_max_send_text()
+   *
+   * @return array<string,mixed>
+   */
+  function ymlb_max_send_text(array $settings, string $chatId, string $text): array
+  {
+    $apiKey = ymlb_max_api_key_normalize((string)($settings['max_api_key'] ?? ''));
+    if ($apiKey === '') {
+      return ['ok' => false, 'error' => 'MAX_API_KEY_EMPTY'];
+    }
+
+    $baseUrl = rtrim(trim((string)($settings['max_base_url'] ?? 'https://platform-api.max.ru')), '/');
+    $sendPath = trim((string)($settings['max_send_path'] ?? '/messages'));
+    if ($baseUrl === '' || $sendPath === '') {
+      return ['ok' => false, 'error' => 'MAX_ENDPOINT_EMPTY'];
+    }
+
+    $chatId = trim($chatId);
+    $text = trim($text);
+    if ($chatId === '' || $text === '') {
+      return ['ok' => false, 'error' => 'MAX_PARAMS_REQUIRED'];
+    }
+
+    $url = $baseUrl . '/' . ltrim($sendPath, '/');
+    $url .= '?' . http_build_query(['chat_id' => $chatId]);
+
+    $http = ymlb_max_http_json('POST', $url, [
+      'Authorization: ' . $apiKey,
+    ], [
+      'text' => $text,
+    ], 25);
+
+    if (($http['ok'] ?? false) !== true) {
+      return ['ok' => false, 'error' => (string)($http['error'] ?? 'MAX_HTTP_ERROR'), 'raw' => $http];
+    }
+
+    $code = (int)($http['http_code'] ?? 0);
+    $ok = ($code >= 200 && $code < 300);
+    return ['ok' => $ok, 'error' => $ok ? '' : ('HTTP_' . $code), 'raw' => $http['json'] ?? (string)($http['raw'] ?? '')];
+  }
+
+  /**
+   * ymlb_target_send_text()
+   *
+   * @param array<string,mixed> $options
+   * @return array<string,mixed>
+   */
+  function ymlb_target_send_text(array $settings, string $platform, string $chatId, string $text, array $options = []): array
+  {
+    $platform = ymlb_platform_norm($platform);
+    if ($platform === 'max') {
+      return ymlb_max_send_text($settings, $chatId, $text);
+    }
+
+    $token = trim((string)($settings['bot_token'] ?? ''));
+    if ($token === '') {
+      return ['ok' => false, 'error' => 'TG_TOKEN_EMPTY'];
+    }
+
+    if (!function_exists('tg_send_message')) {
+      return ['ok' => false, 'error' => 'TG_SEND_MISSING'];
+    }
+
+    return tg_send_message($token, $chatId, $text, $options);
+  }
+
+  /**
+   * ymlb_target_send_rows()
+   *
+   * @param array<int,string> $rows
+   * @return array<string,mixed>
+   */
+  function ymlb_target_send_rows(array $settings, string $platform, string $chatId, string $targetKind, array $rows, ?string $photoPublic = null, ?string $productPhoto = null): array
+  {
+    $platform = ymlb_platform_norm($platform);
+    $targetKind = strtolower(trim($targetKind));
+    if ($targetKind !== 'chat') $targetKind = 'channel';
+
+    if ($platform === 'max') {
+      $parts = $rows;
+      if ($targetKind === 'chat') {
+        array_unshift($parts, 'Ссылки на товар');
+      }
+      return ymlb_max_send_text($settings, $chatId, implode("\n\n", $parts));
+    }
+
+    $token = trim((string)($settings['bot_token'] ?? ''));
+    if ($token === '') {
+      return ['ok' => false, 'error' => 'TG_TOKEN_EMPTY'];
+    }
+
+    if ($targetKind === 'chat') {
+      $chatHeader = 'Ссылки на товар';
+      $chatBody = $chatHeader . "\n" . implode("\n\n", $rows);
+      $photoForSend = trim((string)($photoPublic ?: $productPhoto));
+
+      if ($photoForSend !== '' && function_exists('tg_request')) {
+        $sendResult = tg_request($token, 'sendPhoto', [
+          'chat_id' => $chatId,
+          'photo' => $photoForSend,
+          'caption' => $chatBody,
+        ]);
+        if (!empty($sendResult['ok'])) {
+          return $sendResult;
+        }
+      }
+
+      return ymlb_target_send_text($settings, 'tg', $chatId, $chatBody, [
+        'disable_web_page_preview' => true,
+      ]);
+    }
+
+    return ymlb_target_send_text($settings, 'tg', $chatId, implode("\n\n", $rows), [
+      'parse_mode' => 'HTML',
+      'disable_web_page_preview' => true,
+    ]);
+  }
+
+  /**
+   * ymlb_max_subscription_list()
+   *
+   * @return array<string,mixed>
+   */
+  function ymlb_max_subscription_list(array $settings): array
+  {
+    $baseUrl = rtrim(trim((string)($settings['max_base_url'] ?? 'https://platform-api.max.ru')), '/');
+    $apiKey = ymlb_max_api_key_normalize((string)($settings['max_api_key'] ?? ''));
+    if ($baseUrl === '') {
+      return ['ok' => false, 'error' => 'MAX_BASE_URL_EMPTY', 'items' => []];
+    }
+    if ($apiKey === '') {
+      return ['ok' => false, 'error' => 'MAX_API_KEY_EMPTY', 'items' => []];
+    }
+
+    $url = $baseUrl . '/subscriptions?count=100';
+    $res = ymlb_max_http_json('GET', $url, [
+      'Authorization: ' . $apiKey,
+    ], null, 20);
+    if (($res['ok'] ?? false) !== true) {
+      return ['ok' => false, 'error' => ymlb_max_extract_error($res), 'items' => []];
+    }
+
+    $httpCode = (int)($res['http_code'] ?? 0);
+    if ($httpCode < 200 || $httpCode >= 300) {
+      return ['ok' => false, 'error' => ymlb_max_extract_error($res), 'items' => []];
+    }
+
+    $json = (array)($res['json'] ?? []);
+    $items = [];
+    if (isset($json['subscriptions']) && is_array($json['subscriptions'])) {
+      $items = $json['subscriptions'];
+    } elseif (isset($json['items']) && is_array($json['items'])) {
+      $items = $json['items'];
+    } elseif (isset($json['result']['subscriptions']) && is_array($json['result']['subscriptions'])) {
+      $items = $json['result']['subscriptions'];
+    } elseif (isset($json['result']['items']) && is_array($json['result']['items'])) {
+      $items = $json['result']['items'];
+    }
+
+    return ['ok' => true, 'items' => is_array($items) ? $items : []];
+  }
+
+  /**
+   * ymlb_max_subscription_url()
+   */
+  function ymlb_max_subscription_url(array $subscription): string
+  {
+    $req = (array)($subscription['request'] ?? []);
+    return trim((string)($subscription['url'] ?? $req['url'] ?? $subscription['endpoint_url'] ?? ''));
+  }
+
+  /**
+   * ymlb_max_subscription_version()
+   */
+  function ymlb_max_subscription_version(array $subscription): string
+  {
+    $req = (array)($subscription['request'] ?? []);
+    return trim((string)($subscription['version'] ?? $req['version'] ?? ''));
+  }
+
+  /**
+   * ymlb_max_subscription_accepts_messages()
+   */
+  function ymlb_max_subscription_accepts_messages(array $subscription): bool
+  {
+    $req = (array)($subscription['request'] ?? []);
+    $types = $subscription['update_types'] ?? ($req['update_types'] ?? []);
+    if (!is_array($types) || !$types) return true;
+
+    foreach ($types as $type) {
+      if (trim((string)$type) === 'message_created') return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * ymlb_max_subscription_recreate_reason()
+   */
+  function ymlb_max_subscription_recreate_reason(array $subscription): string
+  {
+    if (!ymlb_max_subscription_accepts_messages($subscription)) {
+      return 'missing_message_created';
+    }
+
+    $version = ymlb_max_subscription_version($subscription);
+    if ($version === '') {
+      return 'missing_version';
+    }
+
+    if ($version !== ymlb_max_api_version()) {
+      return 'version_mismatch';
+    }
+
+    return '';
+  }
+
+  /**
+   * ymlb_max_subscription_delete()
+   *
+   * @return array<string,mixed>
+   */
+  function ymlb_max_subscription_delete(array $settings, string $urlToDelete): array
+  {
+    $urlToDelete = trim($urlToDelete);
+    if ($urlToDelete === '') return ['ok' => false, 'error' => 'SUBSCRIPTION_URL_EMPTY'];
+
+    $baseUrl = rtrim(trim((string)($settings['max_base_url'] ?? 'https://platform-api.max.ru')), '/');
+    $apiKey = ymlb_max_api_key_normalize((string)($settings['max_api_key'] ?? ''));
+    if ($baseUrl === '') return ['ok' => false, 'error' => 'MAX_BASE_URL_EMPTY'];
+    if ($apiKey === '') return ['ok' => false, 'error' => 'MAX_API_KEY_EMPTY'];
+
+    $url = $baseUrl . '/subscriptions?url=' . rawurlencode($urlToDelete);
+    $res = ymlb_max_http_json('DELETE', $url, [
+      'Authorization: ' . $apiKey,
+    ], null, 25);
+    if (($res['ok'] ?? false) !== true) {
+      return ['ok' => false, 'error' => ymlb_max_extract_error($res)];
+    }
+
+    $httpCode = (int)($res['http_code'] ?? 0);
+    $json = (array)($res['json'] ?? []);
+    if ($httpCode < 200 || $httpCode >= 300) {
+      return ['ok' => false, 'error' => ymlb_max_extract_error($res), 'http_code' => $httpCode];
+    }
+
+    if (array_key_exists('success', $json) && (bool)$json['success'] === false) {
+      $error = trim((string)($json['message'] ?? $json['error'] ?? 'MAX_UNSUBSCRIBE_FAILED'));
+      if ($error === '') $error = 'MAX_UNSUBSCRIBE_FAILED';
+      return ['ok' => false, 'error' => $error, 'http_code' => $httpCode];
+    }
+
+    return ['ok' => true];
+  }
+
+  /**
+   * ymlb_max_subscription_match()
+   */
+  function ymlb_max_subscription_match(array $subscription, string $endpointUrl): bool
+  {
+    $url = ymlb_max_subscription_url($subscription);
+    if ($url === '' || $endpointUrl === '' || $url !== $endpointUrl) return false;
+    return ymlb_max_subscription_accepts_messages($subscription);
+  }
+
+  /**
+   * ymlb_max_webhook_info()
+   *
+   * @return array<string,mixed>
+   */
+  function ymlb_max_webhook_info(array $settings): array
+  {
+    $endpointUrl = ymlb_max_listener_url($settings);
+    if ($endpointUrl === '') {
+      return ['ok' => false, 'error' => 'MAX_WEBHOOK_URL_EMPTY', 'result' => ['url' => ''], 'expected_url' => ''];
+    }
+
+    $listed = ymlb_max_subscription_list($settings);
+    if (($listed['ok'] ?? false) !== true) {
+      $listed['result'] = ['url' => ''];
+      $listed['expected_url'] = $endpointUrl;
+      return $listed;
+    }
+
+    $sameUrlSubscription = null;
+    foreach ((array)($listed['items'] ?? []) as $sub) {
+      if (!is_array($sub)) continue;
+
+      $subUrl = ymlb_max_subscription_url($sub);
+      if ($subUrl === $endpointUrl && $sameUrlSubscription === null) {
+        $sameUrlSubscription = $sub;
+      }
+
+      if (ymlb_max_subscription_match($sub, $endpointUrl)) {
+        return [
+          'ok' => true,
+          'result' => ['url' => $endpointUrl],
+          'subscription' => $sub,
+          'items_count' => count((array)($listed['items'] ?? [])),
+          'expected_url' => $endpointUrl,
+          'subscription_version' => ymlb_max_subscription_version($sub),
+          'recreate_needed' => 0,
+          'recreate_reason' => '',
+        ];
+      }
+    }
+
+    if (is_array($sameUrlSubscription)) {
+      $recreateReason = ymlb_max_subscription_recreate_reason($sameUrlSubscription);
+      return [
+        'ok' => false,
+        'error' => 'MAX_WEBHOOK_RECREATE_REQUIRED',
+        'result' => ['url' => $endpointUrl],
+        'subscription' => $sameUrlSubscription,
+        'items_count' => count((array)($listed['items'] ?? [])),
+        'expected_url' => $endpointUrl,
+        'subscription_version' => ymlb_max_subscription_version($sameUrlSubscription),
+        'recreate_needed' => 1,
+        'recreate_reason' => $recreateReason,
+      ];
+    }
+
+    return [
+      'ok' => false,
+      'error' => 'MAX_WEBHOOK_NOT_FOUND',
+      'result' => ['url' => ''],
+      'items_count' => count((array)($listed['items'] ?? [])),
+      'expected_url' => $endpointUrl,
+      'recreate_needed' => 0,
+      'recreate_reason' => '',
+    ];
+  }
+
+  /**
+   * ymlb_max_webhook_set()
+   *
+   * @return array<string,mixed>
+   */
+  function ymlb_max_webhook_set(array $settings): array
+  {
+    $endpointUrl = ymlb_max_listener_url($settings);
+    if ($endpointUrl === '' || !preg_match('~^https?://~i', $endpointUrl)) {
+      return ['ok' => false, 'error' => 'MAX_WEBHOOK_URL_INVALID', 'url' => $endpointUrl];
+    }
+
+    $listed = ymlb_max_subscription_list($settings);
+    $removed = 0;
+    $removeErrors = [];
+    $recreated = 0;
+    $recreateReason = '';
+
+    if (($listed['ok'] ?? false) === true) {
+      foreach ((array)($listed['items'] ?? []) as $sub) {
+        if (!is_array($sub)) continue;
+
+        $subUrl = ymlb_max_subscription_url($sub);
+        if ($subUrl !== $endpointUrl) continue;
+
+        $reason = ymlb_max_subscription_recreate_reason($sub);
+        if ($reason === '' && ymlb_max_subscription_match($sub, $endpointUrl)) {
+          return [
+            'ok' => true,
+            'created' => 0,
+            'removed' => $removed,
+            'remove_errors' => $removeErrors,
+            'recreated' => $recreated,
+            'recreate_reason' => $recreateReason,
+            'url' => $endpointUrl,
+          ];
+        }
+
+        $delete = ymlb_max_subscription_delete($settings, $subUrl);
+        if (($delete['ok'] ?? false) !== true) {
+          $removeErrors[] = [
+            'url' => $subUrl,
+            'error' => (string)($delete['error'] ?? 'DELETE_FAILED'),
+          ];
+          return [
+            'ok' => false,
+            'error' => 'MAX_WEBHOOK_DELETE_FAILED',
+            'details' => $removeErrors,
+            'url' => $endpointUrl,
+          ];
+        }
+
+        $removed++;
+        $recreated = 1;
+        $recreateReason = $reason !== '' ? $reason : 'recreate';
+        break;
+      }
+    } else {
+      return ['ok' => false, 'error' => (string)($listed['error'] ?? 'MAX_SUBSCRIPTIONS_FAILED')];
+    }
+
+    $baseUrl = rtrim(trim((string)($settings['max_base_url'] ?? 'https://platform-api.max.ru')), '/');
+    $apiKey = ymlb_max_api_key_normalize((string)($settings['max_api_key'] ?? ''));
+    if ($baseUrl === '') return ['ok' => false, 'error' => 'MAX_BASE_URL_EMPTY'];
+    if ($apiKey === '') return ['ok' => false, 'error' => 'MAX_API_KEY_EMPTY'];
+
+    $url = $baseUrl . '/subscriptions';
+    $payload = [
+      'url' => $endpointUrl,
+      'version' => ymlb_max_api_version(),
+    ];
+    $res = ymlb_max_http_json('POST', $url, [
+      'Authorization: ' . $apiKey,
+    ], $payload, 25);
+    if (($res['ok'] ?? false) !== true) {
+      return [
+        'ok' => false,
+        'error' => ymlb_max_extract_error($res),
+        'removed' => $removed,
+        'remove_errors' => $removeErrors,
+        'recreated' => $recreated,
+        'recreate_reason' => $recreateReason,
+      ];
+    }
+
+    $httpCode = (int)($res['http_code'] ?? 0);
+    $json = (array)($res['json'] ?? []);
+    if ($httpCode < 200 || $httpCode >= 300) {
+      return [
+        'ok' => false,
+        'error' => ymlb_max_extract_error($res),
+        'http_code' => $httpCode,
+        'removed' => $removed,
+        'remove_errors' => $removeErrors,
+        'recreated' => $recreated,
+        'recreate_reason' => $recreateReason,
+      ];
+    }
+
+    if (array_key_exists('success', $json) && (bool)$json['success'] === false) {
+      $error = trim((string)($json['message'] ?? $json['error'] ?? 'MAX_SUBSCRIBE_FAILED'));
+      if ($error === '') $error = 'MAX_SUBSCRIBE_FAILED';
+      return [
+        'ok' => false,
+        'error' => $error,
+        'http_code' => $httpCode,
+        'removed' => $removed,
+        'remove_errors' => $removeErrors,
+        'recreated' => $recreated,
+        'recreate_reason' => $recreateReason,
+      ];
+    }
+
+    return [
+      'ok' => true,
+      'created' => 1,
+      'removed' => $removed,
+      'remove_errors' => $removeErrors,
+      'recreated' => $recreated,
+      'recreate_reason' => $recreateReason,
+      'url' => $endpointUrl,
+      'raw' => $json,
+    ];
+  }
+
+  /**
+   * ymlb_max_webhook_process()
+   *
+   * @return array<string,mixed>
+   */
+  function ymlb_max_webhook_process(PDO $pdo): array
+  {
+    ymlb_ensure_schema($pdo);
+    $settings = ymlb_settings_get($pdo);
+
+    if ((int)($settings['enabled'] ?? 0) !== 1 || (int)($settings['max_enabled'] ?? 0) !== 1) {
+      return ['ok' => true, 'http' => 200, 'handled' => false, 'reason' => 'max_disabled'];
+    }
+
+    $raw = file_get_contents('php://input');
+    $payload = json_decode(is_string($raw) ? $raw : '', true);
+    if (!is_array($payload)) $payload = [];
+
+    $meta = ymlb_max_extract_message($payload);
+    if (!$meta) {
+      return ['ok' => true, 'http' => 200, 'handled' => false, 'reason' => 'ignored_update'];
+    }
+
+    $updateType = trim((string)($meta['update_type'] ?? ''));
+    if ($updateType !== '' && $updateType !== 'message_created') {
+      return ['ok' => true, 'http' => 200, 'handled' => false, 'reason' => 'ignored_type'];
+    }
+
+    if (ymlb_max_is_bot_sender($meta)) {
+      return ['ok' => true, 'http' => 200, 'handled' => false, 'reason' => 'bot_sender'];
+    }
+
+    $message = [
+      'chat' => [
+        'id' => (string)($meta['chat_id'] ?? ''),
+        'title' => (string)($meta['chat_title'] ?? ''),
+        'type' => (string)($meta['chat_type'] ?? ''),
+      ],
+      'text' => (string)($meta['message_text'] ?? ''),
+    ];
+
+    $result = ymlb_process_channel_post($pdo, $settings, $message, 'chat', 'max');
+    return [
+      'ok' => true,
+      'http' => 200,
+      'handled' => !empty($result['handled']),
+      'reason' => (string)($result['reason'] ?? ''),
+      'meta' => $meta,
+      'result' => $result,
+    ];
+  }
+
+  /**
    * ymlb_process_private_message()
    *
    * @param array<string,mixed> $message
@@ -3488,7 +5203,7 @@ if (!function_exists('ymlb_module_code')) {
    * @param array<string,mixed> $settings
    * @return array<string,mixed>
    */
-  function ymlb_process_channel_post(PDO $pdo, array $settings, array $channelPost, string $targetKind = 'channel'): array
+  function ymlb_process_channel_post(PDO $pdo, array $settings, array $channelPost, string $targetKind = 'channel', string $platform = 'tg'): array
   {
     $chat = (array)($channelPost['chat'] ?? []);
     $chatId = trim((string)($chat['id'] ?? ''));
@@ -3498,6 +5213,11 @@ if (!function_exists('ymlb_module_code')) {
     $token = trim((string)($settings['bot_token'] ?? ''));
     $targetKind = strtolower(trim($targetKind));
     if ($targetKind !== 'chat') $targetKind = 'channel';
+    $platform = ymlb_platform_norm($platform);
+    if ($targetKind === 'channel') $platform = 'tg';
+    $canSendTransport = ($platform === 'max')
+      ? (trim((string)($settings['max_api_key'] ?? '')) !== '' && trim((string)($settings['max_base_url'] ?? '')) !== '' && trim((string)($settings['max_send_path'] ?? '')) !== '')
+      : ($token !== '');
 
     if ($chatId === '') {
       ymlb_stage_log('pipeline_channel', 'warn', [
@@ -3518,6 +5238,7 @@ if (!function_exists('ymlb_module_code')) {
     ymlb_stage_log('pipeline_channel', 'info', [
       'stage' => 'start',
       'target_kind' => $targetKind,
+      'platform' => $platform,
       'chat_id' => $chatId,
       'chat_username' => $chatUsername,
       'chat_title' => $chatTitle,
@@ -3525,21 +5246,22 @@ if (!function_exists('ymlb_module_code')) {
     ]);
 
     $confirm = ($targetKind === 'chat')
-      ? ymlb_chat_confirm_from_text($pdo, $text, $chatId, $chatUsername, $chatTitle)
-      : ymlb_channel_confirm_from_text($pdo, $text, $chatId, $chatUsername, $chatTitle);
+      ? ymlb_chat_confirm_from_text($pdo, $text, $chatId, $chatUsername, $chatTitle, $platform)
+      : ymlb_channel_confirm_from_text($pdo, $text, $chatId, $chatUsername, $chatTitle, $platform);
     if (is_array($confirm)) {
       ymlb_stage_log('pipeline_channel', 'info', [
         'stage' => 'channel_confirmed',
         'target_kind' => $targetKind,
+        'platform' => $platform,
         'chat_id' => $chatId,
         'channel_id' => (int)($confirm['channel_id'] ?? 0),
         'binding_id' => (int)($confirm['binding_id'] ?? 0),
       ]);
-      if ($token !== '') {
+      if ($canSendTransport) {
         $okText = ($targetKind === 'chat')
           ? 'Chat confirmed and linked.'
           : 'Channel confirmed and linked.';
-        tg_send_message($token, $chatId, $okText);
+        ymlb_target_send_text($settings, $platform, $chatId, $okText);
       }
       return ['handled' => true, 'reason' => 'channel_confirmed', 'channel_id' => (int)($confirm['channel_id'] ?? 0)];
     }
@@ -3548,6 +5270,7 @@ if (!function_exists('ymlb_module_code')) {
       ymlb_stage_log('pipeline_channel', 'info', [
         'stage' => 'precheck',
         'target_kind' => $targetKind,
+        'platform' => $platform,
         'chat_id' => $chatId,
         'reason' => 'chat_mode_disabled',
       ]);
@@ -3555,12 +5278,13 @@ if (!function_exists('ymlb_module_code')) {
     }
 
     $channels = ($targetKind === 'chat')
-      ? ymlb_chats_find_active_by_chat($pdo, $chatId)
-      : ymlb_channels_find_active_by_chat($pdo, $chatId);
+      ? ymlb_chats_find_active_by_chat($pdo, $chatId, $platform)
+      : ymlb_channels_find_active_by_chat($pdo, $chatId, $platform);
     if (!$channels) {
       ymlb_stage_log('pipeline_channel', 'warn', [
         'stage' => 'find_channel',
         'target_kind' => $targetKind,
+        'platform' => $platform,
         'chat_id' => $chatId,
         'reason' => 'channel_not_registered',
       ]);
@@ -3569,6 +5293,7 @@ if (!function_exists('ymlb_module_code')) {
     ymlb_stage_log('pipeline_channel', 'info', [
       'stage' => 'find_channel',
       'target_kind' => $targetKind,
+      'platform' => $platform,
       'chat_id' => $chatId,
       'channel_rows' => count($channels),
     ]);
@@ -3578,6 +5303,7 @@ if (!function_exists('ymlb_module_code')) {
       ymlb_stage_log('pipeline_channel', 'warn', [
         'stage' => 'resolve_binding',
         'target_kind' => $targetKind,
+        'platform' => $platform,
         'chat_id' => $chatId,
         'reason' => 'bindings_empty',
       ]);
@@ -3585,24 +5311,31 @@ if (!function_exists('ymlb_module_code')) {
     }
 
     $activeBindings = $activeBindingsAll;
+    $targetSelectedSiteIds = [];
+    $targetSitesExplicit = false;
+    $explicitSitesByBinding = [];
+    $targetRow = isset($channels[0]) && is_array($channels[0]) ? (array)$channels[0] : [];
+    $targetBindingId = (int)($targetRow['binding_id'] ?? 0);
+    $targetRowId = (int)($targetRow['id'] ?? 0);
+
     if ($targetKind === 'chat') {
-      $chatRow = isset($channels[0]) && is_array($channels[0]) ? (array)$channels[0] : [];
-      $chatBindingId = (int)($chatRow['binding_id'] ?? 0);
-      if ($chatBindingId <= 0) {
-        ymlb_stage_log('pipeline_channel', 'warn', [
+      if ($targetBindingId <= 0) {
+          ymlb_stage_log('pipeline_channel', 'warn', [
           'stage' => 'resolve_binding',
           'target_kind' => $targetKind,
+          'platform' => $platform,
           'chat_id' => $chatId,
           'reason' => 'chat_binding_missing',
         ]);
         return ['handled' => false, 'reason' => 'chat_binding_missing'];
       }
-      if (!isset($activeBindingsAll[$chatBindingId])) {
+      if (!isset($activeBindingsAll[$targetBindingId])) {
         ymlb_stage_log('pipeline_channel', 'warn', [
           'stage' => 'resolve_binding',
           'target_kind' => $targetKind,
+          'platform' => $platform,
           'chat_id' => $chatId,
-          'binding_id' => $chatBindingId,
+          'binding_id' => $targetBindingId,
           'reason' => 'chat_binding_inactive',
         ]);
         return ['handled' => true, 'reason' => 'chat_binding_inactive'];
@@ -3611,20 +5344,51 @@ if (!function_exists('ymlb_module_code')) {
         ymlb_stage_log('pipeline_channel', 'warn', [
           'stage' => 'resolve_binding',
           'target_kind' => $targetKind,
+          'platform' => $platform,
           'chat_id' => $chatId,
           'reason' => 'multiple_chat_rows_detected',
           'channel_rows' => count($channels),
-          'selected_binding_id' => $chatBindingId,
+          'selected_binding_id' => $targetBindingId,
         ]);
       }
-      $activeBindings = [$chatBindingId => $activeBindingsAll[$chatBindingId]];
+    }
+
+    if ($targetRowId > 0) {
+      $targetSelectedSiteIds = ymlb_channel_site_ids($pdo, $targetRowId, true);
+      $targetSitesExplicit = count(ymlb_channel_site_ids($pdo, $targetRowId, false)) > 0;
+    }
+
+    if ($targetSitesExplicit) {
+      $explicitSites = ymlb_sites_by_ids($pdo, $targetSelectedSiteIds, true);
+      foreach ($explicitSites as $explicitSite) {
+        $siteBindingId = (int)($explicitSite['binding_id'] ?? 0);
+        if ($siteBindingId <= 0 || !isset($activeBindingsAll[$siteBindingId])) {
+          continue;
+        }
+        if (!isset($explicitSitesByBinding[$siteBindingId])) {
+          $explicitSitesByBinding[$siteBindingId] = [];
+        }
+        $explicitSitesByBinding[$siteBindingId][] = $explicitSite;
+      }
+
+      $activeBindings = [];
+      foreach (array_keys($explicitSitesByBinding) as $siteBindingId) {
+        $siteBindingId = (int)$siteBindingId;
+        if (isset($activeBindingsAll[$siteBindingId])) {
+          $activeBindings[$siteBindingId] = $activeBindingsAll[$siteBindingId];
+        }
+      }
+    } elseif ($targetKind === 'chat') {
+      $activeBindings = [$targetBindingId => $activeBindingsAll[$targetBindingId]];
     }
     ymlb_stage_log('pipeline_channel', 'info', [
       'stage' => 'resolve_binding',
       'target_kind' => $targetKind,
+      'platform' => $platform,
       'chat_id' => $chatId,
       'binding_ids' => array_values(array_map('intval', array_keys($activeBindings))),
       'active_bindings_count' => count($activeBindings),
+      'sites_explicit' => ($targetSitesExplicit ? 1 : 0),
     ]);
 
     $bindingIds = array_values(array_map('intval', array_keys($activeBindings)));
@@ -3634,6 +5398,7 @@ if (!function_exists('ymlb_module_code')) {
     if ($startUrl === null) {
       ymlb_stage_log('pipeline_channel', 'warn', [
         'stage' => 'extract_url',
+        'platform' => $platform,
         'chat_id' => $chatId,
         'binding_id' => $bindingId,
         'reason' => 'url_not_found',
@@ -3643,6 +5408,7 @@ if (!function_exists('ymlb_module_code')) {
 
     ymlb_stage_log('pipeline_channel', 'info', [
       'stage' => 'extract_url',
+      'platform' => $platform,
       'chat_id' => $chatId,
       'binding_id' => $bindingId,
       'source_url' => $startUrl,
@@ -3652,6 +5418,7 @@ if (!function_exists('ymlb_module_code')) {
       ymlb_stage_log('pipeline_channel', 'info', [
         'stage' => 'extract_url',
         'target_kind' => $targetKind,
+        'platform' => $platform,
         'chat_id' => $chatId,
         'binding_id' => $bindingId,
         'reason' => 'non_market_url_ignored',
@@ -3666,6 +5433,7 @@ if (!function_exists('ymlb_module_code')) {
       ymlb_stage_log('pipeline_channel', 'info', [
         'stage' => 'extract_url',
         'target_kind' => $targetKind,
+        'platform' => $platform,
         'chat_id' => $chatId,
         'binding_id' => $bindingId,
         'reason' => 'resolved_non_market_url_ignored',
@@ -3687,6 +5455,7 @@ if (!function_exists('ymlb_module_code')) {
         ymlb_stage_log('pipeline_channel', 'info', [
           'stage' => 'extract_url',
           'target_kind' => $targetKind,
+          'platform' => $platform,
           'chat_id' => $chatId,
           'binding_id' => $bindingId,
           'reason' => 'own_clid_detected_skip',
@@ -3700,19 +5469,20 @@ if (!function_exists('ymlb_module_code')) {
     if (ymlb_is_market_short_url($startUrl) && ymlb_is_market_short_url($url1)) {
       ymlb_stage_log('pipeline_channel', 'warn', [
         'stage' => 'extract_url',
+        'platform' => $platform,
         'chat_id' => $chatId,
         'binding_id' => $bindingId,
         'reason' => 'short_url_unresolved',
         'source_url' => $startUrl,
         'resolved_url' => $url1,
       ]);
-      if ($token !== '') {
-        tg_send_message($token, $chatId, 'Не удалось автоматически раскрыть короткую ссылку. Пожалуйста, отправьте ссылку на товар.');
+      if ($canSendTransport) {
+        ymlb_target_send_text($settings, $platform, $chatId, 'Не удалось автоматически раскрыть короткую ссылку. Пожалуйста, отправьте ссылку на товар.');
       }
       return ['handled' => true, 'reason' => 'short_url_unresolved'];
     }
 
-    if ($targetKind === 'chat' && $token !== '') {
+    if ($targetKind === 'chat' && $platform === 'tg' && $token !== '' && function_exists('tg_request')) {
       $sourceMessageId = (int)($channelPost['message_id'] ?? 0);
       if ($sourceMessageId > 0) {
         $deleteResult = tg_request($token, 'deleteMessage', [
@@ -3722,6 +5492,7 @@ if (!function_exists('ymlb_module_code')) {
         ymlb_stage_log('pipeline_channel', (!empty($deleteResult['ok']) ? 'info' : 'warn'), [
           'stage' => 'delete_source_message',
           'target_kind' => $targetKind,
+          'platform' => $platform,
           'chat_id' => $chatId,
           'binding_id' => $bindingId,
           'message_id' => $sourceMessageId,
@@ -3830,31 +5601,19 @@ if (!function_exists('ymlb_module_code')) {
 
     $rows = [];
     $hasAnySites = false;
-    $eridFailed = false;
-    $eridFailedBindingId = 0;
-    $eridFailedSite = 0;
-    $eridFailedClid = '';
-    $eridFailedOauthLikelyExpired = false;
-    $eridFailedOauthAgeDays = -1;
+    $eridFailures = [];
+    $selectedSitesTotal = count($targetSelectedSiteIds);
 
     foreach ($activeBindings as $bindingId => $binding) {
-      $sites = ymlb_sites_by_binding($pdo, (int)$bindingId, true);
-      if ($targetKind === 'chat' && is_array($sites) && count($sites) > 1) {
-        ymlb_stage_log('pipeline_channel', 'info', [
-          'stage' => 'sites_loaded',
-          'chat_id' => $chatId,
-          'binding_id' => (int)$bindingId,
-          'reason' => 'chat_single_site_mode',
-          'sites_total' => count($sites),
-          'selected_site_id' => (int)($sites[0]['id'] ?? 0),
-        ]);
-        $sites = [(array)$sites[0]];
-      }
+      $sites = $targetSitesExplicit
+        ? (array)($explicitSitesByBinding[(int)$bindingId] ?? [])
+        : ymlb_sites_by_binding($pdo, (int)$bindingId, true);
       ymlb_stage_log('pipeline_channel', 'info', [
         'stage' => 'sites_loaded',
         'chat_id' => $chatId,
         'binding_id' => (int)$bindingId,
         'sites_count' => is_array($sites) ? count($sites) : 0,
+        'sites_explicit' => ($targetSitesExplicit ? 1 : 0),
       ]);
       if (!$sites) {
         ymlb_stage_log('pipeline_channel', 'warn', [
@@ -3863,8 +5622,8 @@ if (!function_exists('ymlb_module_code')) {
           'binding_id' => (int)$bindingId,
           'reason' => 'sites_empty',
         ]);
-        continue;
-      }
+          continue;
+        }
       $hasAnySites = true;
 
       $crmUserId = (int)($binding['crm_user_id'] ?? 0);
@@ -3887,8 +5646,8 @@ if (!function_exists('ymlb_module_code')) {
       ]);
 
       foreach ($sites as $site) {
-      $clid = trim((string)($site['clid'] ?? ''));
-      if ($clid === '') {
+        $clid = trim((string)($site['clid'] ?? ''));
+        if ($clid === '') {
         ymlb_stage_log('pipeline_channel', 'warn', [
           'stage' => 'site_iterate',
           'chat_id' => $chatId,
@@ -3899,6 +5658,7 @@ if (!function_exists('ymlb_module_code')) {
         continue;
       }
       $siteName = trim((string)($site['name'] ?? 'Площадка'));
+      $site['binding_title'] = (string)($site['binding_title'] ?? ($binding['title'] ?? ''));
       $route = ymlb_select_link_route($url2, $manualClean, $affiliateApiKey, $clid, $settings);
       $baseLink = (string)($route['base_link'] ?? '');
       $linkMode = (string)($route['link_mode'] ?? 'not_built');
@@ -3943,6 +5703,7 @@ if (!function_exists('ymlb_module_code')) {
       }
 
       $erid = null;
+      $ordLast = [];
       if ($ordEnabled) {
         $erid = ymlb_ord_create_erid(
           $clid,
@@ -3951,14 +5712,7 @@ if (!function_exists('ymlb_module_code')) {
           $ordText,
           (string)($photoPublic ?: $productPhoto)
         );
-        if (!$erid) {
-          $eridFailed = true;
-          $eridFailedBindingId = (int)$bindingId;
-          $eridFailedSite = (int)($site['id'] ?? 0);
-          $eridFailedClid = $clid;
-          $eridFailedOauthLikelyExpired = $oauthLikelyExpired;
-          $eridFailedOauthAgeDays = ($oauthAgeDays ?? -1);
-        }
+        $ordLast = ymlb_ord_last_result();
       } else {
         ymlb_stage_log('pipeline_channel', 'info', [
           'stage' => 'ord_create_erid',
@@ -3979,9 +5733,34 @@ if (!function_exists('ymlb_module_code')) {
           'site_id' => (int)($site['id'] ?? 0),
           'clid' => $clid,
           'erid_created' => ($erid ? 1 : 0),
+          'reason' => trim((string)($ordLast['reason'] ?? '')),
         ]);
-        if ($eridFailed) {
-          break;
+        if (!$erid) {
+          $failure = [
+            'binding_id' => (int)$bindingId,
+            'binding_title' => (string)($site['binding_title'] ?? ''),
+            'site_id' => (int)($site['id'] ?? 0),
+            'name' => $siteName,
+            'clid' => $clid,
+            'oauth_likely_expired' => $oauthLikelyExpired,
+            'oauth_age_days' => ($oauthAgeDays ?? -1),
+            'reason' => trim((string)($ordLast['reason'] ?? '')),
+            'message' => ymlb_ord_failure_message((is_array($ordLast) ? $ordLast : []), $oauthLikelyExpired),
+          ];
+          $eridFailures[] = $failure;
+          ymlb_stage_log('pipeline_channel', 'warn', [
+            'stage' => 'final_link',
+            'chat_id' => $chatId,
+            'binding_id' => (int)$bindingId,
+            'site_id' => (int)($site['id'] ?? 0),
+            'clid' => $clid,
+            'reason' => 'erid_not_received',
+            'erid_reason' => (string)$failure['reason'],
+            'erid_message' => (string)$failure['message'],
+            'oauth_likely_expired' => ($oauthLikelyExpired ? 1 : 0),
+            'oauth_age_days' => ($oauthAgeDays ?? -1),
+          ]);
+          continue;
         }
       }
 
@@ -4001,10 +5780,13 @@ if (!function_exists('ymlb_module_code')) {
         );
       }
 
+      $chatNeedsLabels = ($selectedSitesTotal > 1 || count($sites) > 1 || count($activeBindings) > 1);
       if ($targetKind === 'chat') {
-        $rowText = $final;
+        $rowText = $chatNeedsLabels
+          ? (ymlb_target_site_label($site) . "\n" . $final)
+          : $final;
       } else {
-        $rowText = '<b>' . ymlb_tg_escape($siteName) . "</b>\n" . $final;
+        $rowText = '<b>' . ymlb_tg_escape(ymlb_target_site_label($site)) . "</b>\n" . $final;
       }
       $rows[] = $rowText;
 
@@ -4021,38 +5803,49 @@ if (!function_exists('ymlb_module_code')) {
         'reply_text_source' => ($descriptionForReply !== '' ? 'description' : ($titleFromUrlForReply !== '' ? 'url_title' : 'none')),
       ]);
       }
-      if ($ordEnabled && $eridFailed) {
-        break;
-      }
     }
 
     if (!$hasAnySites) {
-      if ($token !== '') {
-        tg_send_message($token, $chatId, 'Для вашего кабинета (CLID) не настроены активные площадки.');
+      if ($canSendTransport) {
+        $msg = $targetSitesExplicit
+          ? 'Для этого чата не настроены активные площадки. Привяжите хотя бы одну площадку к чату.'
+          : 'Для вашего кабинета (CLID) не настроены активные площадки.';
+        if ($targetSitesExplicit && $targetKind !== 'chat') {
+          $msg = 'Р”Р»СЏ СЌС‚РѕРіРѕ РєР°РЅР°Р»Р° РЅРµ РЅР°СЃС‚СЂРѕРµРЅС‹ Р°РєС‚РёРІРЅС‹Рµ РїР»РѕС‰Р°РґРєРё. РџСЂРёРІСЏР¶РёС‚Рµ С…РѕС‚СЏ Р±С‹ РѕРґРЅСѓ РїР»РѕС‰Р°РґРєСѓ Рє РєР°РЅР°Р»Сѓ.';
+        }
+        ymlb_target_send_text($settings, $platform, $chatId, $msg);
       }
-      return ['handled' => true, 'reason' => 'sites_empty'];
+      return ['handled' => true, 'reason' => ($targetSitesExplicit ? ($targetKind . '_sites_empty') : 'sites_empty')];
     }
 
-    if ($ordEnabled && $eridFailed) {
+    $eridFailureText = ymlb_target_erid_failure_text($eridFailures);
+    $firstEridFailure = ($eridFailures ? (array)$eridFailures[0] : []);
+    $eridFailedMessage = $eridFailureText;
+    $eridFailedOauthLikelyExpired = !empty($firstEridFailure['oauth_likely_expired']);
+    $eridFailedReason = (string)($firstEridFailure['reason'] ?? '');
+    if ($ordEnabled && !$rows && $eridFailures) {
       ymlb_stage_log('pipeline_channel', 'warn', [
         'stage' => 'final_link',
         'chat_id' => $chatId,
-        'binding_id' => $eridFailedBindingId,
+        'binding_id' => (int)($firstEridFailure['binding_id'] ?? 0),
         'reason' => 'erid_not_received',
-        'site_id' => $eridFailedSite,
-        'clid' => $eridFailedClid,
-        'oauth_likely_expired' => ($eridFailedOauthLikelyExpired ? 1 : 0),
-        'oauth_age_days' => $eridFailedOauthAgeDays,
+        'erid_reason' => (string)($firstEridFailure['reason'] ?? ''),
+        'site_id' => (int)($firstEridFailure['site_id'] ?? 0),
+        'clid' => (string)($firstEridFailure['clid'] ?? ''),
+        'oauth_likely_expired' => (!empty($firstEridFailure['oauth_likely_expired']) ? 1 : 0),
+        'oauth_age_days' => (int)($firstEridFailure['oauth_age_days'] ?? -1),
       ]);
-      if ($token !== '') {
-        if ($eridFailedOauthLikelyExpired) {
+      if ($canSendTransport && $eridFailureText !== '') {
+        if ($eridFailedMessage !== '') {
+          $msg = $eridFailedMessage;
+        } elseif ($eridFailedOauthLikelyExpired && ($eridFailedReason === 'oauth_empty' || $eridFailedReason === 'oauth_rejected' || $eridFailedReason === '')) {
           $msg = 'Ошибка ERID: OAuth-ключ, вероятно, закончился. Обновите OAuth и повторите.';
         } else {
           $msg = 'Ошибка ERID: не удалось получить ERID. Проверьте OAuth-ключ и повторите.';
         }
-        tg_send_message($token, $chatId, $msg);
+        ymlb_target_send_text($settings, $platform, $chatId, $msg);
       }
-      return ['handled' => true, 'reason' => 'erid_not_received'];
+      return ['handled' => true, 'reason' => 'erid_not_received', 'errors_count' => count($eridFailures)];
     }
 
     if (!$rows) {
@@ -4067,65 +5860,61 @@ if (!function_exists('ymlb_module_code')) {
       return ['handled' => false, 'reason' => 'links_not_built'];
     }
 
-    if ($token !== '') {
-      if ($targetKind === 'chat') {
-        $chatHeader = '?????? ?? ??????????';
-        $chatBody = $chatHeader . "\n" . implode("\n\n", $rows);
-        $photoForSend = trim((string)($photoPublic ?: $productPhoto));
-
-        if ($photoForSend !== '') {
-          $sendResult = tg_request($token, 'sendPhoto', [
-            'chat_id' => $chatId,
-            'photo' => $photoForSend,
-            'caption' => $chatBody,
-          ]);
-          if (empty($sendResult['ok'])) {
-            $sendResult = tg_send_message($token, $chatId, $chatBody, [
-              'disable_web_page_preview' => true,
-            ]);
-          }
-        } else {
-          $sendResult = tg_send_message($token, $chatId, $chatBody, [
-            'disable_web_page_preview' => true,
-          ]);
-        }
-      } else {
-        $sendResult = tg_send_message($token, $chatId, implode("\n\n", $rows), [
-          'parse_mode' => 'HTML',
-          'disable_web_page_preview' => true,
-        ]);
-      }
+    $sendOk = false;
+    if ($canSendTransport) {
+      $sendResult = ymlb_target_send_rows($settings, $platform, $chatId, $targetKind, $rows, $photoPublic, $productPhoto);
+      $sendOk = !empty($sendResult['ok']);
       ymlb_stage_log('pipeline_channel', (!empty($sendResult['ok']) ? 'info' : 'warn'), [
         'stage' => 'send_result',
         'target_kind' => $targetKind,
+        'platform' => $platform,
         'chat_id' => $chatId,
         'binding_id' => $bindingId,
         'links_count' => count($rows),
-        'tg_ok' => !empty($sendResult['ok']) ? 1 : 0,
-        'tg_error_code' => (int)($sendResult['error_code'] ?? 0),
+        'send_ok' => !empty($sendResult['ok']) ? 1 : 0,
+        'error_code' => (int)($sendResult['error_code'] ?? 0),
+        'error' => (string)($sendResult['error'] ?? ''),
       ]);
     } else {
       ymlb_stage_log('pipeline_channel', 'warn', [
         'stage' => 'send_result',
+        'platform' => $platform,
         'chat_id' => $chatId,
         'binding_id' => $bindingId,
-        'reason' => 'bot_token_empty',
+        'reason' => 'sender_not_ready',
         'links_count' => count($rows),
+      ]);
+    }
+
+    if ($canSendTransport && $sendOk && $eridFailureText !== '') {
+      $errorSendResult = ymlb_target_send_text($settings, $platform, $chatId, $eridFailureText);
+      ymlb_stage_log('pipeline_channel', (!empty($errorSendResult['ok']) ? 'info' : 'warn'), [
+        'stage' => 'send_errors',
+        'platform' => $platform,
+        'chat_id' => $chatId,
+        'binding_id' => $bindingId,
+        'errors_count' => count($eridFailures),
+        'send_ok' => !empty($errorSendResult['ok']) ? 1 : 0,
+        'error_code' => (int)($errorSendResult['error_code'] ?? 0),
+        'error' => (string)($errorSendResult['error'] ?? ''),
       ]);
     }
 
     ymlb_stage_log('pipeline_channel', 'info', [
       'stage' => 'done',
+      'platform' => $platform,
       'chat_id' => $chatId,
       'binding_id' => $bindingId,
-      'reason' => 'links_sent',
+      'reason' => ($eridFailureText !== '' ? 'links_sent_with_erid_errors' : 'links_sent'),
       'links_count' => count($rows),
+      'errors_count' => count($eridFailures),
     ]);
 
     return [
       'handled' => true,
-      'reason' => 'links_sent',
+      'reason' => ($eridFailureText !== '' ? 'links_sent_with_erid_errors' : 'links_sent'),
       'links_count' => count($rows),
+      'errors_count' => count($eridFailures),
     ];
   }
 
@@ -4163,20 +5952,6 @@ if (!function_exists('ymlb_module_code')) {
         'http' => 503,
         'reason' => 'disabled',
         'message' => 'Bot disabled',
-      ];
-    }
-
-    if ((int)($settings['chat_mode_enabled'] ?? 1) !== 1) {
-      ymlb_stage_log('webhook', 'warn', [
-        'stage' => 'precheck',
-        'scope' => $scope,
-        'reason' => 'chat_mode_disabled',
-      ]);
-      return [
-        'ok' => false,
-        'http' => 503,
-        'reason' => 'chat_mode_disabled',
-        'message' => 'Chat mode disabled',
       ];
     }
 
@@ -4269,6 +6044,8 @@ if (!function_exists('ymlb_module_code')) {
           } else {
             $result = ymlb_process_chat_message($pdo, $settings, $msg);
           }
+        } elseif (isset($update['my_chat_member']) && is_array($update['my_chat_member'])) {
+          $result = ymlb_process_my_chat_member($pdo, $settings, (array)$update['my_chat_member']);
         } else {
           $result = ['handled' => false, 'reason' => 'update_type_ignored'];
         }
@@ -4283,6 +6060,8 @@ if (!function_exists('ymlb_module_code')) {
           } else {
             $result = ymlb_process_private_message($pdo, $settings, $msg);
           }
+        } elseif (isset($update['my_chat_member']) && is_array($update['my_chat_member'])) {
+          $result = ymlb_process_my_chat_member($pdo, $settings, (array)$update['my_chat_member']);
         } else {
           $result = ['handled' => false, 'reason' => 'update_type_ignored'];
         }
@@ -4409,7 +6188,7 @@ if (!function_exists('ymlb_module_code')) {
       }
 
       $params = [
-        'allowed_updates' => ['message'],
+        'allowed_updates' => ['message', 'my_chat_member'],
         'drop_pending_updates' => false,
       ];
 
@@ -4442,8 +6221,8 @@ if (!function_exists('ymlb_module_code')) {
     }
 
     $mainAllowed = ((int)($settings['chat_bot_separate'] ?? 0) === 1)
-      ? ['channel_post']
-      : ['message', 'channel_post'];
+      ? ['channel_post', 'my_chat_member']
+      : ['message', 'channel_post', 'my_chat_member'];
     $params = [
       'allowed_updates' => $mainAllowed,
       'drop_pending_updates' => false,
@@ -4569,4 +6348,3 @@ if (!function_exists('ymlb_module_code')) {
     ];
   }
 }
-

@@ -479,6 +479,8 @@ if (!function_exists('tg_config')) {
   {
     $message = [];
     $type = '';
+    $chat = [];
+    $from = [];
 
     if (isset($update['message']) && is_array($update['message'])) {
       $message = $update['message'];
@@ -492,13 +494,25 @@ if (!function_exists('tg_config')) {
     } elseif (isset($update['edited_channel_post']) && is_array($update['edited_channel_post'])) {
       $message = $update['edited_channel_post'];
       $type = 'edited_channel_post';
+    } elseif (isset($update['my_chat_member']) && is_array($update['my_chat_member'])) {
+      $type = 'my_chat_member';
+      $chat = (array)($update['my_chat_member']['chat'] ?? []);
+      $from = (array)($update['my_chat_member']['from'] ?? []);
+    } elseif (isset($update['chat_member']) && is_array($update['chat_member'])) {
+      $type = 'chat_member';
+      $chat = (array)($update['chat_member']['chat'] ?? []);
+      $from = (array)($update['chat_member']['from'] ?? []);
     } elseif (isset($update['callback_query']) && is_array($update['callback_query'])) {
       $type = 'callback_query';
       $message = (array)($update['callback_query']['message'] ?? []);
     }
 
-    $chat = (array)($message['chat'] ?? []);
-    $from = (array)($message['from'] ?? []);
+    if (!$chat) {
+      $chat = (array)($message['chat'] ?? []);
+    }
+    if (!$from) {
+      $from = (array)($message['from'] ?? []);
+    }
 
     if ($type === 'callback_query' && isset($update['callback_query']['from']) && is_array($update['callback_query']['from'])) {
       $from = (array)$update['callback_query']['from'];

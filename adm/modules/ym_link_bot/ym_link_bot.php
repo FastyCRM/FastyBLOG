@@ -60,6 +60,7 @@ $dataCardClass = 'l-col l-col--12';
       <div><span class="muted">Модуль:</span> <code><?= h($moduleCode) ?></code></div>
       <?php if ($canManage): ?>
         <div><span class="muted">Webhook listener:</span> <code><?= h(ymlb_listener_url($settings)) ?></code></div>
+        <div><span class="muted">MAX webhook:</span> <code><?= h(ymlb_max_listener_url($settings)) ?></code></div>
       <?php endif; ?>
     </div>
   </div>
@@ -72,7 +73,8 @@ $dataCardClass = 'l-col l-col--12';
         <div class="card__title">Настройки Бота</div>
       </div>
       <div class="card__body">
-        <form class="ymlb-form ymlb-form-grid" id="ymlbSettingsForm" data-ymlb-form="settings">
+        <div class="ymlb-settings-shell">
+        <form class="ymlb-form ymlb-form-grid ymlb-settings-form" id="ymlbSettingsForm" data-ymlb-form="settings">
           <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
 
           <label class="field field--stack">
@@ -83,6 +85,11 @@ $dataCardClass = 'l-col l-col--12';
           <label class="field field--stack">
             <span class="field__label">ChatLink (обработка из чата/канала)</span>
             <input type="checkbox" name="chat_mode_enabled" value="1" <?= ((int)($settings['chat_mode_enabled'] ?? 1) === 1) ? 'checked' : '' ?>>
+          </label>
+
+          <label class="field field--stack">
+            <span class="field__label">MAX enabled</span>
+            <input type="checkbox" name="max_enabled" value="1" <?= ((int)($settings['max_enabled'] ?? 0) === 1) ? 'checked' : '' ?>>
           </label>
 
           <label class="field field--stack">
@@ -122,6 +129,21 @@ $dataCardClass = 'l-col l-col--12';
           </label>
 
           <label class="field field--stack">
+            <span class="field__label">MAX API key</span>
+            <input class="input" type="text" name="max_api_key" value="<?= h((string)($settings['max_api_key'] ?? '')) ?>">
+          </label>
+
+          <label class="field field--stack">
+            <span class="field__label">MAX base URL</span>
+            <input class="input" type="text" name="max_base_url" value="<?= h((string)($settings['max_base_url'] ?? '')) ?>">
+          </label>
+
+          <label class="field field--stack">
+            <span class="field__label">MAX send path</span>
+            <input class="input" type="text" name="max_send_path" value="<?= h((string)($settings['max_send_path'] ?? '')) ?>">
+          </label>
+
+          <label class="field field--stack">
             <span class="field__label">Affiliate API key</span>
             <input class="input" type="text" name="affiliate_api_key" value="<?= h((string)$settings['affiliate_api_key']) ?>">
           </label>
@@ -157,8 +179,13 @@ $dataCardClass = 'l-col l-col--12';
           </label>
 
           <button class="btn btn--accent" type="submit">Сохранить настройки</button>
+          <label class="field field--stack">
+            <span class="field__label">MAX listener path</span>
+            <input class="input" type="text" name="max_listener_path" value="<?= h((string)($settings['max_listener_path'] ?? '')) ?>">
+          </label>
         </form>
 
+        <div class="ymlb-webhook-grid">
         <div class="ymlb-webhook-box">
           <div class="ymlb-webhook-status">
             <span id="ymlbWebhookDot" class="ymlb-dot is-off" aria-hidden="true"></span>
@@ -179,6 +206,18 @@ $dataCardClass = 'l-col l-col--12';
             <button type="button" class="btn" data-ymlb-action="chat-webhook-check">Проверить chat webhook</button>
             <button type="button" class="btn btn--accent" data-ymlb-action="chat-webhook-set">Подключить chat webhook</button>
           </div>
+        </div>
+        <div class="ymlb-webhook-box">
+          <div class="ymlb-webhook-status">
+            <span id="ymlbMaxWebhookDot" class="ymlb-dot is-off" aria-hidden="true"></span>
+            <span id="ymlbMaxWebhookText" class="muted">MAX webhook not checked</span>
+          </div>
+          <div class="ymlb-webhook-actions">
+            <button type="button" class="btn" data-ymlb-action="max-webhook-check">Check MAX webhook</button>
+            <button type="button" class="btn btn--accent" data-ymlb-action="max-webhook-set">Connect MAX webhook</button>
+          </div>
+        </div>
+        </div>
         </div>
       </div>
     </article>
@@ -265,8 +304,7 @@ $dataCardClass = 'l-col l-col--12';
         <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
         <label class="field field--stack">
           <span class="field__label">Пользователь (binding)</span>
-          <input type="hidden" name="binding_id" value="">
-          <div class="input input--readonly">Auto (all active bindings in this bot)</div>
+          <select class="select" name="binding_id" id="ymlbBindingSelectForChannel"></select>
         </label>
         <label class="field field--stack">
           <span class="field__label">Ожидаемый @channel (опц.)</span>
@@ -285,6 +323,7 @@ $dataCardClass = 'l-col l-col--12';
             <th>ID</th>
             <th>Пользователь</th>
             <th>Канал</th>
+            <th>Platform</th>
             <th>Chat ID</th>
             <th>Код</th>
             <th>Статус</th>
@@ -314,8 +353,12 @@ $dataCardClass = 'l-col l-col--12';
         <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
         <label class="field field--stack">
           <span class="field__label">Пользователь (binding)</span>
-          <input type="hidden" name="binding_id" value="">
-          <div class="input input--readonly">Auto (all active bindings in this bot)</div>
+          <select class="select" name="binding_id" id="ymlbBindingSelectForChat"></select>
+        </label>
+        <label class="field field--stack">
+          <span class="field__label">РџР»РѕС‰Р°РґРєРё РґР»СЏ С‡Р°С‚Р°</span>
+          <select class="select ymlb-select-multi" name="site_ids[]" id="ymlbChatSiteSelectCreate" multiple size="5"></select>
+          <span class="field__hint muted">Р•СЃР»Рё РЅРёС‡РµРіРѕ РЅРµ РІС‹Р±СЂР°РЅРѕ, РјРѕРґСѓР»СЊ РїСЂРѕРіРѕРЅРёС‚ СЃСЃС‹Р»РєСѓ РїРѕ РІСЃРµРј Р°РєС‚РёРІРЅС‹Рј РїР»РѕС‰Р°РґРєР°Рј РІР»Р°РґРµР»СЊС†Р°.</span>
         </label>
         <label class="field field--stack">
           <span class="field__label">Ожидаемый @chat (опц.)</span>

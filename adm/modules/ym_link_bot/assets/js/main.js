@@ -22,6 +22,8 @@
   var webhookText = document.getElementById('ymlbWebhookText');
   var chatWebhookDot = document.getElementById('ymlbChatWebhookDot');
   var chatWebhookText = document.getElementById('ymlbChatWebhookText');
+  var maxWebhookDot = document.getElementById('ymlbMaxWebhookDot');
+  var maxWebhookText = document.getElementById('ymlbMaxWebhookText');
   var settingsPanel = document.getElementById('ymlbSettingsPanel');
 
   var settingsForm = document.getElementById('ymlbSettingsForm');
@@ -32,7 +34,270 @@
   var cleanupForm = document.getElementById('ymlbCleanupForm');
   var modalMap = {};
 
+  function ensureChatSitesForm() {
+    var existing = document.getElementById('ymlbChatSitesForm');
+    if (existing) return existing;
+
+    var form = document.createElement('form');
+    form.className = 'ymlb-form ymlb-form-grid';
+    form.id = 'ymlbChatSitesForm';
+    form.setAttribute('data-ymlb-form', 'chat-sites');
+    form.innerHTML =
+      '<input type="hidden" name="csrf" value="' + esc(csrf) + '">' +
+      '<input type="hidden" name="chat_id" value="">' +
+      '<div class="field field--stack">' +
+        '<span class="field__label">Target</span>' +
+        '<div class="input input--readonly" id="ymlbChatSitesMeta">-</div>' +
+      '</div>' +
+      '<label class="field field--stack">' +
+        '<span class="field__label">Attached sites</span>' +
+        '<select class="select ymlb-select-multi" name="site_ids[]" id="ymlbChatSiteSelectEdit" multiple size="8"></select>' +
+        '<span class="field__hint muted">Admin can attach any active sites, including sites from different owners.</span>' +
+      '</label>' +
+      '<button class="btn btn--accent" type="submit">Save target sites</button>';
+
+    (root.parentNode || document.body).appendChild(form);
+    return form;
+  }
+
+  function ensureTargetCreateSitesSelect(form, selectId) {
+    if (!form) return null;
+    var existing = document.getElementById(selectId);
+    if (existing) return existing;
+
+    var bindingSelect = form.querySelector('select[name="binding_id"]');
+    var bindingLabel = bindingSelect ? bindingSelect.closest('label') : null;
+    if (!bindingLabel || !bindingLabel.parentNode) return null;
+
+    var label = document.createElement('label');
+    label.className = 'field field--stack';
+    label.innerHTML =
+      '<span class="field__label">Sites for target</span>' +
+      '<select class="select ymlb-select-multi" name="site_ids[]" id="' + esc(selectId) + '" multiple size="5"></select>' +
+      '<span class="field__hint muted">Admin can attach any active sites, including sites from different owners.</span>';
+    bindingLabel.parentNode.insertBefore(label, bindingLabel.nextSibling);
+    return label.querySelector('select');
+  }
+
+  var chatSitesForm = ensureChatSitesForm();
+  var channelCodeSitesSelect = ensureTargetCreateSitesSelect(channelCodeForm, 'ymlbChannelSiteSelectCreate');
+  var chatCodeSitesSelect = ensureTargetCreateSitesSelect(chatCodeForm, 'ymlbChatSiteSelectCreate');
+  var chatEditSitesSelect = document.getElementById('ymlbChatSiteSelectEdit');
+  var chatSitesMeta = document.getElementById('ymlbChatSitesMeta');
+
   var crmUserSelect = bindingForm && bindingForm.elements ? bindingForm.elements.crm_user_id : null;
+
+  function ensurePlatformUi() {
+    if (channelCodeForm) {
+      Array.prototype.slice.call(channelCodeForm.querySelectorAll('select[name="platform"]')).forEach(function (node) {
+        var label = node.closest('label');
+        if (label) label.remove();
+      });
+    }
+
+    if (chatCodeForm && !chatCodeForm.querySelector('select[name="platform"]')) {
+      var usernameLabel = chatCodeForm.querySelector('input[name="channel_username"]');
+      usernameLabel = usernameLabel ? usernameLabel.closest('label') : null;
+      if (usernameLabel) {
+        var platformLabelEl = document.createElement('label');
+        platformLabelEl.className = 'field field--stack';
+        platformLabelEl.innerHTML =
+          '<span class="field__label">Platform</span>' +
+          '<select class="select" name="platform">' +
+            '<option value="tg">Telegram</option>' +
+            '<option value="max">MAX</option>' +
+          '</select>';
+        usernameLabel.parentNode.insertBefore(platformLabelEl, usernameLabel);
+      }
+    }
+
+    if (chatsBody) {
+      var chatsTable = chatsBody.closest('table');
+      var chatsHead = chatsTable ? chatsTable.querySelector('thead tr') : null;
+      if (chatsHead && !Array.prototype.some.call(chatsHead.children, function (node) {
+        return String(node.textContent || '').trim() === 'Platform';
+      })) {
+        var chatPlatformHead = document.createElement('th');
+        chatPlatformHead.textContent = 'Platform';
+        chatsHead.insertBefore(chatPlatformHead, chatsHead.children[2] || null);
+      }
+      if (chatsHead && !Array.prototype.some.call(chatsHead.children, function (node) {
+        return String(node.textContent || '').trim() === 'Sites';
+      })) {
+        var chatSitesHead = document.createElement('th');
+        var chatIdHead = Array.prototype.find.call(chatsHead.children, function (node) {
+          return String(node.textContent || '').trim() === 'Chat ID';
+        });
+        chatSitesHead.textContent = 'Sites';
+        chatsHead.insertBefore(chatSitesHead, chatIdHead || chatsHead.children[4] || null);
+      }
+      if (chatsBody.children.length === 1) {
+        var chatsOnlyRow = chatsBody.children[0];
+        if (chatsOnlyRow.children.length === 1) {
+          chatsOnlyRow.children[0].setAttribute('colspan', '9');
+        }
+      }
+    }
+
+    if (channelsBody) {
+      var channelsTable = channelsBody.closest('table');
+      var channelsHead = channelsTable ? channelsTable.querySelector('thead tr') : null;
+      if (channelsHead && channelsHead.children.length === 7) {
+        var channelPlatformHead = document.createElement('th');
+        channelPlatformHead.textContent = 'Platform';
+        channelsHead.insertBefore(channelPlatformHead, channelsHead.children[2] || null);
+      } else if (channelsHead && channelsHead.children.length > 3) {
+        var existingPlatformHead = channelsHead.children[3];
+        if (existingPlatformHead && String(existingPlatformHead.textContent || '').trim() === 'Platform') {
+          channelsHead.insertBefore(existingPlatformHead, channelsHead.children[2] || null);
+        }
+      }
+      if (channelsHead && !Array.prototype.some.call(channelsHead.children, function (node) {
+        return String(node.textContent || '').trim() === 'Sites';
+      })) {
+        var channelSitesHead = document.createElement('th');
+        var channelChatIdHead = Array.prototype.find.call(channelsHead.children, function (node) {
+          return String(node.textContent || '').trim() === 'Chat ID';
+        });
+        channelSitesHead.textContent = 'Sites';
+        channelsHead.insertBefore(channelSitesHead, channelChatIdHead || channelsHead.children[4] || null);
+      }
+      if (channelsBody.children.length === 1) {
+        var channelsOnlyRow = channelsBody.children[0];
+        if (channelsOnlyRow.children.length === 1) {
+          channelsOnlyRow.children[0].setAttribute('colspan', '9');
+        }
+      }
+    }
+  }
+
+  ensurePlatformUi();
+
+  [channelCodeSitesSelect, chatCodeSitesSelect].forEach(function (select) {
+    if (!select) return;
+    var createSitesLabel = select.closest('label');
+    var createSitesTitle = createSitesLabel ? createSitesLabel.querySelector('.field__label') : null;
+    var createSitesHint = createSitesLabel ? createSitesLabel.querySelector('.field__hint') : null;
+    if (createSitesTitle) createSitesTitle.textContent = 'Sites for target';
+    if (createSitesHint) createSitesHint.textContent = 'Admin can attach any active sites, including sites from different owners.';
+  });
+
+  function organizeSettingsForm() {
+    if (!settingsForm || settingsForm.getAttribute('data-ymlb-settings-ready') === '1') return;
+
+    var hiddenInputs = Array.prototype.slice.call(settingsForm.querySelectorAll('input[type="hidden"]'));
+    var submitBtn = settingsForm.querySelector('button[type="submit"]');
+    var chatHint = settingsForm.querySelector('.ymlb-mini-hint');
+
+    function takeField(name) {
+      var input = settingsForm.elements ? settingsForm.elements[name] : null;
+      if (!input || typeof input.closest !== 'function') return null;
+      return input.closest('.field');
+    }
+
+    function markFull(node) {
+      if (node && node.classList) node.classList.add('ymlb-field--full');
+      return node;
+    }
+
+    function createGroup(title, hint, nodes) {
+      var section = document.createElement('section');
+      section.className = 'ymlb-settings-group';
+
+      var head = document.createElement('div');
+      head.className = 'ymlb-settings-group__head';
+
+      var titleEl = document.createElement('div');
+      titleEl.className = 'ymlb-settings-group__title';
+      titleEl.textContent = title;
+      head.appendChild(titleEl);
+
+      if (hint) {
+        var hintEl = document.createElement('div');
+        hintEl.className = 'ymlb-settings-group__hint muted';
+        hintEl.textContent = hint;
+        head.appendChild(hintEl);
+      }
+
+      var grid = document.createElement('div');
+      grid.className = 'ymlb-settings-grid';
+
+      (nodes || []).forEach(function (node) {
+        if (node && node.parentNode === settingsForm) {
+          grid.appendChild(node);
+        }
+      });
+
+      section.appendChild(head);
+      section.appendChild(grid);
+      return section;
+    }
+
+    settingsForm.classList.remove('ymlb-form-grid');
+
+    var groups = [
+      createGroup('General', 'Main module switches and common routing.', [
+        takeField('enabled'),
+        takeField('chat_mode_enabled'),
+        takeField('geo_id'),
+        markFull(takeField('link_static_params'))
+      ]),
+      createGroup('Telegram Main Bot', 'Channel webhook and default Telegram sender.', [
+        takeField('bot_token'),
+        takeField('bot_username'),
+        takeField('webhook_secret'),
+        takeField('listener_path')
+      ]),
+      createGroup('Telegram Chat Bot', 'Optional separate bot for chat mode.', [
+        takeField('chat_bot_separate'),
+        markFull(chatHint),
+        takeField('chat_bot_token'),
+        takeField('chat_bot_username'),
+        takeField('chat_webhook_secret'),
+        takeField('chat_listener_path')
+      ]),
+      createGroup('MAX', 'MAX API credentials, sender route and webhook listener.', [
+        takeField('max_enabled'),
+        takeField('max_api_key'),
+        takeField('max_base_url'),
+        takeField('max_send_path'),
+        markFull(takeField('max_listener_path'))
+      ]),
+      createGroup('Links and Affiliate', 'Partner API usage and manual fallback generation.', [
+        markFull(takeField('affiliate_api_key')),
+        takeField('partner_mode_enabled'),
+        takeField('manual_mode_enabled')
+      ])
+    ];
+
+    var actions = document.createElement('div');
+    actions.className = 'ymlb-settings-actions';
+    if (submitBtn && submitBtn.parentNode === settingsForm) {
+      actions.appendChild(submitBtn);
+    }
+
+    settingsForm.innerHTML = '';
+    hiddenInputs.forEach(function (node) { settingsForm.appendChild(node); });
+    groups.forEach(function (group) { settingsForm.appendChild(group); });
+    settingsForm.appendChild(actions);
+    settingsForm.setAttribute('data-ymlb-settings-ready', '1');
+
+    var titles = [
+      'Telegram Main Webhook',
+      'Telegram Chat Webhook',
+      'MAX Webhook'
+    ];
+    Array.prototype.slice.call(document.querySelectorAll('#ymlbSettingsPanel .ymlb-webhook-box')).forEach(function (box, index) {
+      if (!box.querySelector('.ymlb-webhook-box__title')) {
+        var title = document.createElement('div');
+        title.className = 'ymlb-webhook-box__title';
+        title.textContent = titles[index] || 'Webhook';
+        box.insertBefore(title, box.firstChild);
+      }
+    });
+  }
+
+  organizeSettingsForm();
 
   function esc(value) {
     var s = String(value == null ? '' : value);
@@ -261,17 +526,34 @@
     if (name === 'channel' && channelCodeForm) {
       channelCodeForm.reset();
       renderBindingSelects((state.bootstrap && state.bootstrap.bindings) || []);
+      refreshChannelCodeSiteOptions([]);
     }
 
     if (name === 'chat' && chatCodeForm) {
       chatCodeForm.reset();
+      if (chatCodeForm.elements.platform) {
+        chatCodeForm.elements.platform.value = 'tg';
+      }
       renderBindingSelects((state.bootstrap && state.bootstrap.bindings) || []);
+      refreshChatCodeSiteOptions([]);
+    }
+
+    if (name === 'chatSites' && chatSitesForm) {
+      chatSitesForm.reset();
+      if (chatSitesForm.elements.chat_id) {
+        chatSitesForm.elements.chat_id.value = '';
+      }
+      if (chatSitesMeta) {
+        chatSitesMeta.textContent = '-';
+      }
+      renderSiteSelect(chatEditSitesSelect, 0, []);
     }
   }
 
   modalMap.binding = mountFormModal(bindingForm, 'binding', 'Binding');
   modalMap.channel = mountFormModal(channelCodeForm, 'channel', 'Channel Link');
   modalMap.chat = mountFormModal(chatCodeForm, 'chat', 'Chat Link');
+  modalMap.chatSites = mountFormModal(chatSitesForm, 'chatSites', 'Target Sites');
   modalMap.site = mountFormModal(siteForm, 'site', 'Site (CLID)');
   modalMap.settings = mountPanelModal(settingsPanel, 'settings', 'Bot Settings');
 
@@ -290,6 +572,9 @@
     if (settingsForm.elements.chat_mode_enabled) {
       settingsForm.elements.chat_mode_enabled.checked = Number(settings.chat_mode_enabled || 0) === 1;
     }
+    if (settingsForm.elements.max_enabled) {
+      settingsForm.elements.max_enabled.checked = Number(settings.max_enabled || 0) === 1;
+    }
     if (settingsForm.elements.chat_bot_separate) {
       settingsForm.elements.chat_bot_separate.checked = Number(settings.chat_bot_separate || 0) === 1;
     }
@@ -305,6 +590,15 @@
     if (settingsForm.elements.chat_webhook_secret) {
       settingsForm.elements.chat_webhook_secret.value = settings.chat_webhook_secret || '';
     }
+    if (settingsForm.elements.max_api_key) {
+      settingsForm.elements.max_api_key.value = settings.max_api_key || '';
+    }
+    if (settingsForm.elements.max_base_url) {
+      settingsForm.elements.max_base_url.value = settings.max_base_url || '';
+    }
+    if (settingsForm.elements.max_send_path) {
+      settingsForm.elements.max_send_path.value = settings.max_send_path || '';
+    }
     settingsForm.elements.affiliate_api_key.value = settings.affiliate_api_key || '';
     if (settingsForm.elements.partner_mode_enabled) {
       settingsForm.elements.partner_mode_enabled.checked = Number(settings.partner_mode_enabled || 0) === 1;
@@ -317,6 +611,9 @@
     settingsForm.elements.listener_path.value = settings.listener_path || '';
     if (settingsForm.elements.chat_listener_path) {
       settingsForm.elements.chat_listener_path.value = settings.chat_listener_path || '';
+    }
+    if (settingsForm.elements.max_listener_path) {
+      settingsForm.elements.max_listener_path.value = settings.max_listener_path || '';
     }
   }
 
@@ -362,30 +659,154 @@
       }).join('');
     }
 
-    var selectSite = document.getElementById('ymlbBindingSelectForSite');
-    if (selectSite) selectSite.innerHTML = html;
-
-    if (channelCodeForm && channelCodeForm.elements && channelCodeForm.elements.binding_id) {
-      var input = channelCodeForm.elements.binding_id;
-      var current = String(input.value || '');
+    function applyOptions(select) {
+      if (!select) return;
+      var current = String(select.value || '');
+      select.innerHTML = html;
       if (!list.length) {
-        input.value = '';
+        select.value = '';
       } else {
         var exists = list.some(function (row) { return String(row.id || '') === current; });
-        if (!exists) input.value = String(list[0].id || '');
+        select.value = exists ? current : String(list[0].id || '');
       }
     }
 
-    if (chatCodeForm && chatCodeForm.elements && chatCodeForm.elements.binding_id) {
-      var chatInput = chatCodeForm.elements.binding_id;
-      var chatCurrent = String(chatInput.value || '');
-      if (!list.length) {
-        chatInput.value = '';
-      } else {
-        var chatExists = list.some(function (row) { return String(row.id || '') === chatCurrent; });
-        if (!chatExists) chatInput.value = String(list[0].id || '');
-      }
+    applyOptions(document.getElementById('ymlbBindingSelectForSite'));
+    applyOptions(document.getElementById('ymlbBindingSelectForChannel'));
+    applyOptions(document.getElementById('ymlbBindingSelectForChat'));
+    refreshChatCodeSiteOptions();
+  }
+
+  function toIdList(values) {
+    if (!Array.isArray(values)) return [];
+    return values
+      .map(function (value) { return Number(value || 0); })
+      .filter(function (value, index, list) {
+        return value > 0 && list.indexOf(value) === index;
+      });
+  }
+
+  function setSelectValues(select, values) {
+    if (!select) return;
+    var selected = toIdList(values).reduce(function (acc, value) {
+      acc[String(value)] = true;
+      return acc;
+    }, {});
+
+    Array.prototype.slice.call(select.options || []).forEach(function (option) {
+      option.selected = !!selected[String(option.value || '')];
+    });
+  }
+
+  function selectedSelectValues(select) {
+    if (!select || !select.options) return [];
+    return Array.prototype.slice.call(select.options).filter(function (option) {
+      return !!option.selected && String(option.value || '').trim() !== '';
+    }).map(function (option) {
+      return option.value;
+    });
+  }
+
+  function sitesForBinding(bindingId, onlyActive) {
+    var list = (state.bootstrap && state.bootstrap.sites) || [];
+    var normalizedBindingId = Number(bindingId || 0);
+    return list.filter(function (row) {
+      if (Number(row.binding_id || 0) !== normalizedBindingId) return false;
+      if (onlyActive && Number(row.is_active || 0) !== 1) return false;
+      return true;
+    });
+  }
+
+  function sitesForSelection(bindingId, onlyActive) {
+    var list = (state.bootstrap && state.bootstrap.sites) || [];
+    var normalizedBindingId = Number(bindingId || 0);
+    return list.filter(function (row) {
+      if (onlyActive && Number(row.is_active || 0) !== 1) return false;
+      if (canManage) return true;
+      return Number(row.binding_id || 0) === normalizedBindingId;
+    });
+  }
+
+  function siteLabel(site) {
+    var name = String(site && site.name ? site.name : ('Site #' + Number(site && site.id || 0)));
+    var clid = String(site && site.clid ? site.clid : '').trim();
+    return clid ? (name + ' [' + clid + ']') : name;
+  }
+
+  function siteSelectionLabel(site) {
+    var label = siteLabel(site);
+    if (!canManage) return label;
+    var owner = String(site && (site.binding_title || ('binding #' + Number(site.binding_id || 0))) || '').trim();
+    return owner ? (owner + ' / ' + label) : label;
+  }
+
+  function renderSiteSelect(select, bindingId, selectedIds) {
+    if (!select) return;
+
+    var sites = sitesForSelection(bindingId, true);
+    if (!sites.length) {
+      select.innerHTML = '<option value="" disabled>No active sites available</option>';
+      return;
     }
+
+    select.innerHTML = sites.map(function (site) {
+      return '<option value="' + esc(site.id) + '">' + esc(siteSelectionLabel(site)) + '</option>';
+    }).join('');
+    setSelectValues(select, selectedIds);
+  }
+
+  function refreshChannelCodeSiteOptions(selectedIds) {
+    if (!channelCodeForm || !channelCodeSitesSelect || !channelCodeForm.elements || !channelCodeForm.elements.binding_id) return;
+    renderSiteSelect(channelCodeSitesSelect, channelCodeForm.elements.binding_id.value, selectedIds || []);
+  }
+
+  function refreshChatCodeSiteOptions(selectedIds) {
+    if (!chatCodeForm || !chatCodeSitesSelect || !chatCodeForm.elements || !chatCodeForm.elements.binding_id) return;
+    renderSiteSelect(chatCodeSitesSelect, chatCodeForm.elements.binding_id.value, selectedIds || []);
+  }
+
+  function targetSitesSummary(row, targetKind) {
+    var explicit = Number(row && row.linked_sites_explicit || 0) === 1;
+    var titles = Array.isArray(row && row.linked_site_titles) ? row.linked_site_titles.filter(Boolean) : [];
+    if (explicit) {
+      if (!titles.length) {
+        return '<span class="muted">Explicit list is empty</span>';
+      }
+      return titles.map(function (title) { return esc(title); }).join('<br>');
+    }
+
+    var bindingSites = sitesForBinding(row && row.binding_id, true);
+    if (targetKind === 'channel') {
+      var allActiveSites = sitesForSelection(row && row.binding_id, true);
+      if (!allActiveSites.length) {
+        return '<span class="muted">No active sites available</span>';
+      }
+      return '<span class="muted">All active sites (' + allActiveSites.length + ')</span>';
+    }
+
+    if (!bindingSites.length) {
+      return '<span class="muted">No active owner sites</span>';
+    }
+
+    if (bindingSites.length <= 3) {
+      return '<span class="muted">All active sites</span><br>' + bindingSites.map(function (site) {
+        return esc(siteLabel(site));
+      }).join('<br>');
+    }
+
+    return '<span class="muted">All active sites (' + bindingSites.length + ')</span>';
+  }
+
+  function fillChatSitesMeta(row) {
+    if (!chatSitesMeta) return;
+    var parts = [
+      '#' + Number(row && row.id || 0),
+      String(row && (row.chat_kind || 'channel') || 'channel').trim(),
+      platformLabel(row && row.platform || 'tg'),
+      String(row && (row.binding_title || ('binding #' + row.binding_id)) || '').trim(),
+      String(row && (row.channel_username ? '@' + row.channel_username : (row.channel_title || row.channel_chat_id || '-')) || '').trim()
+    ].filter(Boolean);
+    chatSitesMeta.textContent = parts.join(' / ');
   }
 
   function renderBindings(bindings) {
@@ -438,8 +859,25 @@
     }).join('');
   }
 
+  function platformCode(value) {
+    return String(value || '').trim().toLowerCase() === 'max' ? 'max' : 'tg';
+  }
+
+  function platformLabel(value) {
+    return platformCode(value) === 'max' ? 'MAX' : 'Telegram';
+  }
+
+  function platformBadge(value) {
+    var code = platformCode(value);
+    return '<span class="ymlb-platform ymlb-platform--' + code + '">' + esc(platformLabel(code)) + '</span>';
+  }
+
   function renderChannels(channels) {
     if (!channelsBody) return;
+    if (!channels || !channels.length) {
+      channelsBody.innerHTML = '<tr><td colspan="9" class="muted">Channels not added.</td></tr>';
+      return;
+    }
 
     if (!channels || !channels.length) {
       channelsBody.innerHTML = '<tr><td colspan="7" class="muted">Каналы не добавлены.</td></tr>';
@@ -452,7 +890,8 @@
       var channelName = row.channel_username ? '@' + row.channel_username : (row.channel_title || '-');
 
       var controls = canManageData
-        ? '<button class="iconbtn iconbtn--sm" type="button" data-action="toggle-channel" data-id="' + esc(row.id) + '" data-next="' + (isActive ? '0' : '1') + '"><i class="bi ' + (isActive ? 'bi-toggle-on' : 'bi-toggle-off') + '"></i></button>' +
+        ? '<button class="iconbtn iconbtn--sm" type="button" data-action="edit-channel-sites" data-id="' + esc(row.id) + '"><i class="bi bi-diagram-3"></i></button>' +
+          '<button class="iconbtn iconbtn--sm" type="button" data-action="toggle-channel" data-id="' + esc(row.id) + '" data-next="' + (isActive ? '0' : '1') + '"><i class="bi ' + (isActive ? 'bi-toggle-on' : 'bi-toggle-off') + '"></i></button>' +
           '<button class="iconbtn iconbtn--sm" type="button" data-action="delete-channel" data-id="' + esc(row.id) + '"><i class="bi bi-trash"></i></button>'
         : '';
 
@@ -460,7 +899,9 @@
         '<tr>' +
           '<td>' + Number(row.id || 0) + '</td>' +
           '<td>' + esc(row.binding_title || ('#' + row.binding_id)) + '</td>' +
+          '<td>' + platformBadge(row.platform || 'tg') + '</td>' +
           '<td>' + esc(channelName) + '</td>' +
+          '<td>' + targetSitesSummary(row, 'channel') + '</td>' +
           '<td><code>' + esc(row.channel_chat_id || '-') + '</code></td>' +
           '<td><code>' + esc(row.confirm_code || '-') + '</code></td>' +
           '<td>' + (isConfirmed ? (isActive ? 'confirmed / ON' : 'confirmed / OFF') : 'pending') + '</td>' +
@@ -474,7 +915,7 @@
     if (!chatsBody) return;
 
     if (!chats || !chats.length) {
-      chatsBody.innerHTML = '<tr><td colspan="7" class="muted">Chats not added.</td></tr>';
+      chatsBody.innerHTML = '<tr><td colspan="9" class="muted">Chats not added.</td></tr>';
       return;
     }
 
@@ -484,7 +925,8 @@
       var chatName = row.channel_username ? '@' + row.channel_username : (row.channel_title || '-');
 
       var controls = canManageData
-        ? '<button class="iconbtn iconbtn--sm" type="button" data-action="toggle-chat" data-id="' + esc(row.id) + '" data-next="' + (isActive ? '0' : '1') + '"><i class="bi ' + (isActive ? 'bi-toggle-on' : 'bi-toggle-off') + '"></i></button>' +
+        ? '<button class="iconbtn iconbtn--sm" type="button" data-action="edit-chat-sites" data-id="' + esc(row.id) + '"><i class="bi bi-diagram-3"></i></button>' +
+          '<button class="iconbtn iconbtn--sm" type="button" data-action="toggle-chat" data-id="' + esc(row.id) + '" data-next="' + (isActive ? '0' : '1') + '"><i class="bi ' + (isActive ? 'bi-toggle-on' : 'bi-toggle-off') + '"></i></button>' +
           '<button class="iconbtn iconbtn--sm" type="button" data-action="delete-chat" data-id="' + esc(row.id) + '"><i class="bi bi-trash"></i></button>'
         : '';
 
@@ -492,7 +934,9 @@
         '<tr>' +
           '<td>' + Number(row.id || 0) + '</td>' +
           '<td>' + esc(row.binding_title || ('#' + row.binding_id)) + '</td>' +
+          '<td>' + platformBadge(row.platform || 'tg') + '</td>' +
           '<td>' + esc(chatName) + '</td>' +
+          '<td>' + targetSitesSummary(row, 'chat') + '</td>' +
           '<td><code>' + esc(row.channel_chat_id || '-') + '</code></td>' +
           '<td><code>' + esc(row.confirm_code || '-') + '</code></td>' +
           '<td>' + (isConfirmed ? (isActive ? 'confirmed / ON' : 'confirmed / OFF') : 'pending') + '</td>' +
@@ -540,6 +984,9 @@
     renderChannels(bootstrap.channels || []);
     renderChats(bootstrap.chats || []);
     renderSites(bootstrap.sites || []);
+    ensurePlatformUi();
+    refreshChannelCodeSiteOptions(selectedSelectValues(channelCodeSitesSelect));
+    refreshChatCodeSiteOptions(selectedSelectValues(chatCodeSitesSelect));
   }
 
   function findBindingById(id) {
@@ -552,8 +999,44 @@
     return list.find(function (row) { return Number(row.id || 0) === Number(id || 0); }) || null;
   }
 
+  function findChatById(id) {
+    var list = (state.bootstrap && state.bootstrap.chats) || [];
+    return list.find(function (row) { return Number(row.id || 0) === Number(id || 0); }) || null;
+  }
+
   function normalizeUrl(value) {
     return String(value || '').trim().replace(/\/+$/, '');
+  }
+
+  function webhookReasonLabel(code) {
+    switch (String(code || '').trim()) {
+      case 'MAX_API_KEY_EMPTY': return 'MAX API key is empty';
+      case 'MAX_BASE_URL_EMPTY': return 'MAX base URL is empty';
+      case 'MAX_ENDPOINT_EMPTY': return 'MAX send endpoint is empty';
+      case 'MAX_WEBHOOK_URL_EMPTY': return 'MAX webhook URL is empty';
+      case 'MAX_WEBHOOK_URL_INVALID': return 'MAX webhook URL is invalid';
+      case 'MAX_WEBHOOK_NOT_FOUND': return 'MAX webhook is not registered';
+      case 'MAX_WEBHOOK_RECREATE_REQUIRED': return 'MAX subscription exists but must be recreated';
+      case 'MAX_WEBHOOK_DELETE_FAILED': return 'Old MAX subscription could not be removed';
+      case 'MAX_SUBSCRIPTIONS_FAILED': return 'MAX subscriptions request failed';
+      case 'MAX_SUBSCRIBE_FAILED': return 'MAX refused webhook subscription';
+      case 'missing_message_created': return 'Current subscription does not include message updates';
+      case 'missing_version': return 'Current subscription has no API version';
+      case 'version_mismatch': return 'Current subscription uses another API version';
+      default: return String(code || '').trim();
+    }
+  }
+
+  function describeWebhookIssue(fallback, payload) {
+    var parts = [];
+    var error = webhookReasonLabel(payload && payload.error);
+    var recreate = webhookReasonLabel(payload && payload.recreate_reason);
+
+    if (error) parts.push(error);
+    if (recreate) parts.push(recreate);
+    if (payload && payload.http_code) parts.push('HTTP ' + String(payload.http_code));
+
+    return parts.length ? parts.join(' / ') : String(fallback || 'Webhook error');
   }
 
   function resolveWebhookState(data) {
@@ -603,9 +1086,46 @@
     chatWebhookText.textContent = text;
   }
 
+  function applyMaxWebhookState(meta) {
+    if (!maxWebhookDot || !maxWebhookText) return;
+
+    var on = !!(meta && meta.on);
+    var text = String((meta && meta.text) || (on ? 'MAX webhook connected' : 'MAX webhook disconnected'));
+
+    maxWebhookDot.classList.toggle('is-on', on);
+    maxWebhookDot.classList.toggle('is-off', !on);
+
+    maxWebhookText.classList.toggle('is-on', on);
+    maxWebhookText.classList.toggle('is-off', !on);
+    maxWebhookText.classList.add('ymlb-webhook-text');
+    maxWebhookText.textContent = text;
+  }
+
+  function resolveMaxWebhookState(data) {
+    var listener = normalizeUrl((data && data.listener_url) || (state.bootstrap && state.bootstrap.max_listener_url) || '');
+    var remote = data && data.remote ? data.remote : null;
+    var remoteOk = !!(remote && remote.ok === true);
+    var remoteUrl = normalizeUrl(remote && remote.result ? (remote.result.url || '') : '');
+
+    if (!remoteOk || !remoteUrl) {
+      return { on: false, text: describeWebhookIssue('MAX webhook not connected', remote) };
+    }
+
+    if (listener !== '' && remoteUrl === listener) {
+      return { on: true, text: 'MAX webhook connected' };
+    }
+
+    return { on: false, text: 'MAX webhook is connected to another URL' };
+  }
+
   function isChatSeparateEnabled() {
     var settings = (state.bootstrap && state.bootstrap.settings) || {};
     return Number(settings.chat_bot_separate || 0) === 1;
+  }
+
+  function isMaxEnabled() {
+    var settings = (state.bootstrap && state.bootstrap.settings) || {};
+    return Number(settings.max_enabled || 0) === 1;
   }
 
   function fetchWebhookInfo(silent) {
@@ -671,6 +1191,31 @@
       });
   }
 
+  function fetchMaxWebhookInfo(silent) {
+    if (!canManage) {
+      applyMaxWebhookState({ on: false, text: 'MAX webhook: manager only' });
+      return Promise.resolve(null);
+    }
+
+    if (!isMaxEnabled()) {
+      applyMaxWebhookState({ on: false, text: 'MAX webhook: disabled in settings' });
+      return Promise.resolve(null);
+    }
+
+    return api('api_max_webhook_info', 'GET')
+      .then(function (data) {
+        var meta = resolveMaxWebhookState(data);
+        applyMaxWebhookState(meta);
+        if (!silent) notify(meta.text, meta.on ? 'success' : 'warn');
+        return data;
+      })
+      .catch(function (err) {
+        applyMaxWebhookState({ on: false, text: 'MAX webhook check failed' });
+        if (!silent) notify(err.message, 'error');
+        throw err;
+      });
+  }
+
   function refreshBootstrap(opts) {
     opts = opts || {};
     var silent = !!opts.silent;
@@ -682,7 +1227,8 @@
         if (canManage) {
           return Promise.all([
             fetchWebhookInfo(true).catch(function () { return null; }),
-            fetchChatWebhookInfo(true).catch(function () { return null; })
+            fetchChatWebhookInfo(true).catch(function () { return null; }),
+            fetchMaxWebhookInfo(true).catch(function () { return null; })
           ]).then(function () {
             if (!silent) notify('Данные обновлены.', 'success');
             return data;
@@ -774,6 +1320,12 @@
   }
 
   if (channelCodeForm) {
+    if (channelCodeForm.elements && channelCodeForm.elements.binding_id) {
+      channelCodeForm.elements.binding_id.addEventListener('change', function () {
+        refreshChannelCodeSiteOptions([]);
+      });
+    }
+
     channelCodeForm.addEventListener('submit', function (e) {
       e.preventDefault();
       if (!canManageData) return;
@@ -804,6 +1356,20 @@
       var id = Number(btn.getAttribute('data-id') || 0);
       if (!id) return;
 
+      if (action === 'edit-channel-sites') {
+        var channelRow = ((state.bootstrap && state.bootstrap.channels) || []).find(function (row) {
+          return Number(row.id || 0) === id;
+        }) || null;
+        if (!channelRow || !chatSitesForm) return;
+
+        if (chatSitesForm.elements.chat_id) {
+          chatSitesForm.elements.chat_id.value = String(channelRow.id || '');
+        }
+        fillChatSitesMeta(channelRow);
+        renderSiteSelect(chatEditSitesSelect, channelRow.binding_id, toIdList(channelRow.linked_site_ids || []));
+        openModal('chatSites');
+      }
+
       if (action === 'toggle-channel') {
         var next = Number(btn.getAttribute('data-next') || 0) === 1 ? 1 : 0;
 
@@ -825,6 +1391,12 @@
   }
 
   if (chatCodeForm) {
+    if (chatCodeForm.elements && chatCodeForm.elements.binding_id) {
+      chatCodeForm.elements.binding_id.addEventListener('change', function () {
+        refreshChatCodeSiteOptions([]);
+      });
+    }
+
     chatCodeForm.addEventListener('submit', function (e) {
       e.preventDefault();
       if (!canManageData) return;
@@ -834,6 +1406,7 @@
           var gen = data.generated || {};
           if (chatCodeOut) {
             chatCodeOut.textContent =
+              'Platform: ' + platformLabel(gen.platform || (chatCodeForm.elements.platform ? chatCodeForm.elements.platform.value : 'tg')) + '\n' +
               'Code: ' + (gen.code || '-') + '\n' +
               'Expires: ' + (gen.expires_at || '-') + '\n' +
               (gen.instruction || '');
@@ -864,6 +1437,18 @@
           .catch(function (err) { notify(err.message, 'error'); });
       }
 
+      if (action === 'edit-chat-sites') {
+        var chatRow = findChatById(id);
+        if (!chatRow || !chatSitesForm) return;
+
+        if (chatSitesForm.elements.chat_id) {
+          chatSitesForm.elements.chat_id.value = String(chatRow.id || '');
+        }
+        fillChatSitesMeta(chatRow);
+        renderSiteSelect(chatEditSitesSelect, chatRow.binding_id, toIdList(chatRow.linked_site_ids || []));
+        openModal('chatSites');
+      }
+
       if (action === 'delete-chat') {
         if (!window.confirm('Delete chat binding?')) return;
 
@@ -872,6 +1457,21 @@
           .then(function () { notify('Chat binding deleted.', 'success'); })
           .catch(function (err) { notify(err.message, 'error'); });
       }
+    });
+  }
+
+  if (chatSitesForm) {
+    chatSitesForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      if (!canManageData) return;
+
+      api('api_chat_sites_save', 'POST', new FormData(chatSitesForm))
+        .then(function () { return refreshBootstrap({ silent: true }); })
+        .then(function () {
+          closeModal('chatSites');
+          notify('Target sites saved.', 'success');
+        })
+        .catch(function (err) { notify(err.message, 'error'); });
     });
   }
 
@@ -1007,6 +1607,33 @@
           }
           applyChatWebhookState(resolveWebhookState(data));
           notify('Chat webhook connected/updated.', 'success');
+          return refreshBootstrap({ silent: true });
+        })
+        .catch(function (err) { notify(err.message, 'error'); });
+    });
+  }
+
+  var maxWebhookCheckBtn = document.querySelector('[data-ymlb-action="max-webhook-check"]');
+  if (maxWebhookCheckBtn) {
+    maxWebhookCheckBtn.addEventListener('click', function () {
+      fetchMaxWebhookInfo(false).catch(function () {});
+    });
+  }
+
+  var maxWebhookSetBtn = document.querySelector('[data-ymlb-action="max-webhook-set"]');
+  if (maxWebhookSetBtn) {
+    maxWebhookSetBtn.addEventListener('click', function () {
+      if (!canManage) return;
+
+      api('api_max_webhook_set', 'POST', { csrf: csrf })
+        .then(function (data) {
+          if (!data.apply || data.apply.ok !== true) {
+            throw new Error(describeWebhookIssue('MAX webhook setup failed', data.apply));
+          }
+
+          var meta = resolveMaxWebhookState(data);
+          applyMaxWebhookState(meta);
+          notify(meta.text, meta.on ? 'success' : 'warn');
           return refreshBootstrap({ silent: true });
         })
         .catch(function (err) { notify(err.message, 'error'); });
