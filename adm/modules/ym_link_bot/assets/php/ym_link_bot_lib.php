@@ -5503,10 +5503,9 @@ if (!function_exists('ymlb_module_code')) {
       }
     }
 
-    $url2 = ymlb_url_without_query($url1);
-    if ($url2 === '') $url2 = $url1;
-
     $manualClean = market_url_cleanup($url1, ymlb_drop_query_keys()) ?: $url1;
+    $url2 = $manualClean;
+    if ($url2 === '') $url2 = $url1;
     $forceHow = ymlb_should_keep_aprice($url1);
     $affiliateApiKey = trim((string)($settings['affiliate_api_key'] ?? ''));
     $linkStaticParams = (string)($settings['link_static_params'] ?? '');

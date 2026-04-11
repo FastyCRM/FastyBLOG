@@ -55,12 +55,10 @@ try {
     json_err('Не удалось развернуть короткую ссылку. Введите длинную ссылку на товар.', 400);
   }
 
-  // url2: pure product link without params.
-  $url2 = ymlb_url_without_query($url1);
-  if ($url2 === '') $url2 = $url1;
-
-  // Fallback manual cleanup from url1 (legacy mechanism).
+  // url2/manualClean: keep allowed YM params, remove only tracking/service keys from the drop list.
   $manualClean = market_url_cleanup($url1, ymlb_drop_query_keys()) ?: $url1;
+  $url2 = $manualClean;
+  if ($url2 === '') $url2 = $url1;
   $forceHow = ymlb_should_keep_aprice($url1);
   $affiliateApiKey = trim((string)($settings['affiliate_api_key'] ?? ''));
   $linkStaticParams = (string)($settings['link_static_params'] ?? '');
