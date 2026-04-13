@@ -14,7 +14,7 @@ declare(strict_types=1);
 
 if (!defined('ROOT_PATH')) exit;
 
-require_once __DIR__ . '/../../settings.php';
+require_once __DIR__ . '/../../settings_v2.php';
 require_once __DIR__ . '/channel_bridge_i18n.php';
 require_once ROOT_PATH . '/core/telegram.php';
 
@@ -769,11 +769,11 @@ if (!function_exists('channel_bridge_now')) {
     $quoted = 0;
     foreach ($lines as $idx => $line) {
       $line = (string)$line;
-      if (!preg_match('~^\s*(?:↳\s*)?Репост:\s+~u', $line)) {
+      if (!preg_match('~^\s*(?:>\s*)?Репост:\s+~u', $line)) {
         $lines[$idx] = $line;
         continue;
       }
-      $line = preg_replace('~^\s*(?:↳\s*)?~u', '', $line);
+      $line = preg_replace('~^\s*(?:>\s*)?~u', '', $line);
       if (!is_string($line)) $line = '';
       $line = trim($line);
       if ($line === '') continue;
@@ -864,51 +864,457 @@ if (!function_exists('channel_bridge_now')) {
   }
 
   /**
-   * channel_bridge_media_group_collect()
-   * Собирает сообщения TG-альбома в один payload.
+   * channel_bridge_media_group_cleanup()
+   * Removes expired media_group buffers during normal webhook traffic.
    *
-   * Важно:
-   *  - Telegram может доставлять сообщения альбома с заметной задержкой между элементами.
-   *  - Поэтому ждём "тишину" дольше и не удаляем буфер сразу после первого flush,
-   *    чтобы параллельные webhook-процессы не создавали повторный mg-пакет.
+   * @param int $ttlSeconds
+   * @return int
+   */
+  function channel_bridge_media_group_cleanup(int $ttlSeconds = CHANNEL_BRIDGE_MEDIA_GROUP_TTL_SECONDS): int
+  {
+    $ttlSeconds = max(60, $ttlSeconds);
+    $pattern = rtrim(sys_get_temp_dir(), '/\\') . DIRECTORY_SEPARATOR . 'cb_mg_*.json';
+    $files = glob($pattern);
+    if (!is_array($files) || !$files) {
+      return 0;
+    }
+
+    $removed = 0;
+    $now = microtime(true);
+    foreach ($files as $path) {
+      $path = trim((string)$path);
+      if ($path === '' || !is_file($path)) {
+        continue;
+      }
+
+      $fp = @fopen($path, 'c+');
+      if ($fp === false) {
+        continue;
+      }
+      if (!@flock($fp, LOCK_EX | LOCK_NB)) {
+        @fclose($fp);
+        continue;
+      }
+
+      $raw = stream_get_contents($fp);
+      $state = [];
+      if (is_string($raw) && trim($raw) !== '') {
+        $decoded = json_decode($raw, true);
+        if (is_array($decoded)) {
+          $state = $decoded;
+        }
+      }
+
+      $lastSeenAt = (float)($state['last_seen_at'] ?? 0);
+      $sentAt = (float)($state['sent_at'] ?? 0);
+      $mtime = @filemtime($path);
+      $mtimeAt = ($mtime !== false) ? (float)$mtime : 0.0;
+      $pivotAt = max($lastSeenAt, $sentAt, $mtimeAt);
+      $expired = ($pivotAt > 0) && (($now - $pivotAt) >= $ttlSeconds);
+
+      @flock($fp, LOCK_UN);
+      @fclose($fp);
+
+      if ($expired && @unlink($path)) {
+        $removed++;
+      }
+    }
+
+    return $removed;
+  }
+
+  /**
+   * channel_bridge_media_group_state_add_item()
+   * Adds one webhook element to media_group state.
    *
+   * @param array<string,mixed> $state
    * @param array<string,mixed> $payload
-   * @param int $waitMs
-   * @param int $idleMs
+   * @param float $now
    * @return array<string,mixed>
    */
-  function channel_bridge_media_group_collect(array $payload, int $waitMs = 0, int $idleMs = 1200): array
+  function channel_bridge_media_group_state_add_item(array $state, array $payload, float $now): array
   {
+    $sourceMessageId = trim((string)($payload['source_message_id'] ?? ''));
+    $updateId = (int)($payload['tg_update_id'] ?? 0);
+    $sortMessageId = preg_match('~^\d+$~', $sourceMessageId) ? (int)$sourceMessageId : 0;
+
+    if (!isset($state['items']) || !is_array($state['items'])) {
+      $state['items'] = [];
+    }
+
+    $item = isset($state['items'][$sourceMessageId]) && is_array($state['items'][$sourceMessageId])
+      ? (array)$state['items'][$sourceMessageId]
+      : [
+        'source_message_id' => $sourceMessageId,
+        'sort_message_id' => $sortMessageId,
+        'photo_file_ids' => [],
+        'photo_local_map' => [],
+        'photo_local_paths' => [],
+        'message_text' => '',
+        'tg_text_html' => '',
+        'tg_text_link_urls' => [],
+        'tg_public_post_url' => '',
+        'tg_chat_username' => '',
+      ];
+
+    $isNewItem = !isset($state['items'][$sourceMessageId]);
+
+    $photoMap = [];
+    foreach ((array)($item['photo_file_ids'] ?? []) as $photoId) {
+      $photoId = trim((string)$photoId);
+      if ($photoId !== '') {
+        $photoMap[$photoId] = true;
+      }
+    }
+    foreach ((array)($payload['tg_photo_file_ids'] ?? []) as $photoId) {
+      $photoId = trim((string)$photoId);
+      if ($photoId !== '') {
+        $photoMap[$photoId] = true;
+      }
+    }
+    $singlePhotoId = trim((string)($payload['tg_photo_file_id'] ?? ''));
+    if ($singlePhotoId !== '') {
+      $photoMap[$singlePhotoId] = true;
+    }
+    $item['photo_file_ids'] = array_values(array_keys($photoMap));
+    $item['sort_message_id'] = $sortMessageId;
+
+    $localMap = [];
+    if (isset($item['photo_local_map']) && is_array($item['photo_local_map'])) {
+      foreach ($item['photo_local_map'] as $fid => $path) {
+        $fid = trim((string)$fid);
+        $path = trim((string)$path);
+        if ($fid !== '' && $path !== '') {
+          $localMap[$fid] = $path;
+        }
+      }
+    }
+    if (isset($payload['cb_photo_local_map']) && is_array($payload['cb_photo_local_map'])) {
+      foreach ($payload['cb_photo_local_map'] as $fid => $path) {
+        $fid = trim((string)$fid);
+        $path = trim((string)$path);
+        if ($fid !== '' && $path !== '') {
+          $localMap[$fid] = $path;
+        }
+      }
+    }
+    $item['photo_local_map'] = $localMap;
+
+    $localPathsMap = [];
+    foreach ((array)($item['photo_local_paths'] ?? []) as $path) {
+      $path = trim((string)$path);
+      if ($path !== '') {
+        $localPathsMap[$path] = true;
+      }
+    }
+    foreach ((array)($payload['cb_photo_local_paths'] ?? []) as $path) {
+      $path = trim((string)$path);
+      if ($path !== '') {
+        $localPathsMap[$path] = true;
+      }
+    }
+    $singleLocal = trim((string)($payload['cb_photo_local_path'] ?? ''));
+    if ($singleLocal !== '') {
+      $localPathsMap[$singleLocal] = true;
+    }
+    foreach ($localMap as $path) {
+      if (is_string($path) && trim($path) !== '') {
+        $localPathsMap[trim($path)] = true;
+      }
+    }
+    $item['photo_local_paths'] = array_values(array_keys($localPathsMap));
+
+    $messageText = channel_bridge_normalize_text((string)($payload['message_text'] ?? ''));
+    if ($messageText !== '' && trim((string)($item['message_text'] ?? '')) === '') {
+      $item['message_text'] = $messageText;
+    }
+
+    $textHtml = trim((string)($payload['tg_text_html'] ?? ''));
+    if ($textHtml !== '' && trim((string)($item['tg_text_html'] ?? '')) === '') {
+      $item['tg_text_html'] = $textHtml;
+    }
+
+    $linkMap = [];
+    foreach ((array)($item['tg_text_link_urls'] ?? []) as $url) {
+      $url = trim((string)$url);
+      if ($url !== '') {
+        $linkMap[$url] = true;
+      }
+    }
+    foreach ((array)($payload['tg_text_link_urls'] ?? []) as $url) {
+      $url = trim((string)$url);
+      if ($url !== '') {
+        $linkMap[$url] = true;
+      }
+    }
+    $item['tg_text_link_urls'] = array_values(array_keys($linkMap));
+
+    $publicUrl = trim((string)($payload['tg_public_post_url'] ?? ''));
+    if ($publicUrl !== '' && trim((string)($item['tg_public_post_url'] ?? '')) === '') {
+      $item['tg_public_post_url'] = $publicUrl;
+    }
+
+    $chatUsername = trim((string)($payload['tg_chat_username'] ?? ''));
+    if ($chatUsername !== '' && trim((string)($item['tg_chat_username'] ?? '')) === '') {
+      $item['tg_chat_username'] = $chatUsername;
+    }
+
+    $state['items'][$sourceMessageId] = $item;
+    $state['source_platform'] = CHANNEL_BRIDGE_SOURCE_TG;
+    $state['source_chat_id'] = trim((string)($payload['source_chat_id'] ?? ''));
+    $state['media_group_id'] = trim((string)($payload['tg_media_group_id'] ?? ''));
+    $state['items_count'] = count((array)$state['items']);
+    $state['sent'] = ((int)($state['sent'] ?? 0) === 1) ? 1 : 0;
+    $state['revision'] = (int)($state['revision'] ?? 0);
+
+    if (!isset($state['update_ids']) || !is_array($state['update_ids'])) {
+      $state['update_ids'] = [];
+    }
+    if ($updateId > 0) {
+      $state['update_ids'][(string)$updateId] = $updateId;
+    }
+
+    if (!isset($state['first_seen_at']) || (float)$state['first_seen_at'] <= 0) {
+      $state['first_seen_at'] = $now;
+    }
+    if ($isNewItem || !isset($state['last_seen_at']) || (float)$state['last_seen_at'] <= 0) {
+      $state['last_seen_at'] = $now;
+    }
+
+    if ($isNewItem) {
+      $state['revision']++;
+      $state['dispatching'] = 0;
+      $state['dispatch_token'] = '';
+      $state['dispatch_revision'] = 0;
+      $state['dispatch_started_at'] = 0.0;
+    }
+
+    return [
+      'state' => $state,
+      'added' => $isNewItem,
+    ];
+  }
+
+  /**
+   * channel_bridge_media_group_item_count()
+   * Returns current item count for media_group state.
+   *
+   * @param array<string,mixed> $state
+   * @return int
+   */
+  function channel_bridge_media_group_item_count(array $state): int
+  {
+    return count((array)($state['items'] ?? []));
+  }
+
+  /**
+   * channel_bridge_media_group_clear_stale_dispatch()
+   * Clears abandoned dispatch claim so another webhook can retry the album.
+   *
+   * @param array<string,mixed> $state
+   * @param float $now
+   * @return array<string,mixed>
+   */
+  function channel_bridge_media_group_clear_stale_dispatch(array $state, float $now): array
+  {
+    if ((int)($state['dispatching'] ?? 0) !== 1) {
+      return $state;
+    }
+
+    $startedAt = (float)($state['dispatch_started_at'] ?? 0);
+    if ($startedAt > 0 && ($now - $startedAt) < CHANNEL_BRIDGE_MEDIA_GROUP_DISPATCH_STALE_SECONDS) {
+      return $state;
+    }
+
+    $state['dispatching'] = 0;
+    $state['dispatch_token'] = '';
+    $state['dispatch_revision'] = 0;
+    $state['dispatch_started_at'] = 0.0;
+
+    return $state;
+  }
+
+  /**
+   * channel_bridge_media_group_finish_dispatch()
+   * Marks media_group as sent or releases the dispatch claim.
+   *
+   * @param array<string,mixed> $payload
+   * @param string $dispatchToken
+   * @param bool $markSent
+   * @return array<string,mixed>
+   */
+  function channel_bridge_media_group_finish_dispatch(array $payload, string $dispatchToken, bool $markSent): array
+  {
+    $sourceChatId = channel_bridge_norm_chat_id((string)($payload['source_chat_id'] ?? ''));
+    $mediaGroupId = trim((string)($payload['tg_media_group_id'] ?? ''));
+    $dispatchToken = trim($dispatchToken);
+    if ($sourceChatId === '' || $mediaGroupId === '' || $dispatchToken === '') {
+      return ['ok' => false, 'reason' => 'bad_meta'];
+    }
+
+    $path = channel_bridge_media_group_buffer_path($sourceChatId, $mediaGroupId);
+    $locked = channel_bridge_media_group_lock_and_read($path);
+    if (($locked['ok'] ?? false) !== true) {
+      return ['ok' => false, 'reason' => 'lock_failed'];
+    }
+
+    $fp = $locked['fp'];
+    $state = is_array($locked['state'] ?? null) ? (array)$locked['state'] : [];
+    $currentToken = trim((string)($state['dispatch_token'] ?? ''));
+    if ($currentToken === '') {
+      channel_bridge_media_group_unlock($fp);
+      return ['ok' => true, 'reason' => 'claim_missing'];
+    }
+    if (!hash_equals($currentToken, $dispatchToken)) {
+      channel_bridge_media_group_unlock($fp);
+      return ['ok' => true, 'reason' => 'claim_mismatch'];
+    }
+
+    $state['dispatching'] = 0;
+    $state['dispatch_token'] = '';
+    $state['dispatch_revision'] = 0;
+    $state['dispatch_started_at'] = 0.0;
+    if ($markSent) {
+      $state['sent'] = 1;
+      $state['sent_at'] = microtime(true);
+    }
+
+    channel_bridge_media_group_write_and_unlock($fp, $state);
+
+    return ['ok' => true, 'reason' => $markSent ? 'marked_sent' : 'released'];
+  }
+
+  /**
+   * channel_bridge_media_group_payload_from_state()
+   * Builds one aggregated payload from media_group state.
+   *
+   * @param array<string,mixed> $state
+   * @return array<string,mixed>
+   */
+  function channel_bridge_media_group_payload_from_state(array $state): array
+  {
+    $items = [];
+    foreach ((array)($state['items'] ?? []) as $item) {
+      if (is_array($item)) {
+        $items[] = $item;
+      }
+    }
+
+    usort($items, static function (array $left, array $right): int {
+      $leftSort = (int)($left['sort_message_id'] ?? 0);
+      $rightSort = (int)($right['sort_message_id'] ?? 0);
+      if ($leftSort !== $rightSort) {
+        return ($leftSort < $rightSort) ? -1 : 1;
+      }
+
+      return strcmp(
+        trim((string)($left['source_message_id'] ?? '')),
+        trim((string)($right['source_message_id'] ?? ''))
+      );
+    });
+
+    $messageIds = [];
+    $photoIds = [];
+    $localPaths = [];
+    $localMap = [];
+    $linkUrls = [];
+    $messageText = '';
+    $textHtml = '';
+    $publicPostUrl = '';
+    $chatUsername = '';
+
+    foreach ($items as $item) {
+      $messageId = trim((string)($item['source_message_id'] ?? ''));
+      if (preg_match('~^\d+$~', $messageId)) {
+        $messageIds[(int)$messageId] = true;
+      }
+
+      foreach ((array)($item['photo_file_ids'] ?? []) as $photoId) {
+        $photoId = trim((string)$photoId);
+        if ($photoId !== '') {
+          $photoIds[$photoId] = true;
+        }
+      }
+      foreach ((array)($item['photo_local_paths'] ?? []) as $path) {
+        $path = trim((string)$path);
+        if ($path !== '') {
+          $localPaths[$path] = true;
+        }
+      }
+      if (isset($item['photo_local_map']) && is_array($item['photo_local_map'])) {
+        foreach ($item['photo_local_map'] as $fid => $path) {
+          $fid = trim((string)$fid);
+          $path = trim((string)$path);
+          if ($fid !== '' && $path !== '') {
+            $localMap[$fid] = $path;
+            $localPaths[$path] = true;
+          }
+        }
+      }
+
+      if ($messageText === '') {
+        $messageText = channel_bridge_normalize_text((string)($item['message_text'] ?? ''));
+      }
+      if ($textHtml === '') {
+        $textHtml = trim((string)($item['tg_text_html'] ?? ''));
+      }
+      if ($publicPostUrl === '') {
+        $publicPostUrl = trim((string)($item['tg_public_post_url'] ?? ''));
+      }
+      if ($chatUsername === '') {
+        $chatUsername = trim((string)($item['tg_chat_username'] ?? ''));
+      }
+
+      foreach ((array)($item['tg_text_link_urls'] ?? []) as $url) {
+        $url = trim((string)$url);
+        if ($url !== '') {
+          $linkUrls[$url] = true;
+        }
+      }
+    }
+
+    $messageIdList = array_keys($messageIds);
+    sort($messageIdList, SORT_NUMERIC);
+
+    return [
+      'source_platform' => CHANNEL_BRIDGE_SOURCE_TG,
+      'source_chat_id' => trim((string)($state['source_chat_id'] ?? '')),
+      'source_message_id' => 'mg:' . trim((string)($state['media_group_id'] ?? '')),
+      'message_text' => $messageText,
+      'tg_text_html' => $textHtml,
+      'tg_media_group_id' => trim((string)($state['media_group_id'] ?? '')),
+      'tg_media_group_message_ids' => array_values($messageIdList),
+      'tg_photo_file_ids' => array_values(array_keys($photoIds)),
+      'tg_photo_file_id' => (string)(array_key_first($photoIds) ?? ''),
+      'cb_photo_local_map' => $localMap,
+      'cb_photo_local_paths' => array_values(array_keys($localPaths)),
+      'cb_photo_local_path' => (string)(array_key_first($localPaths) ?? ''),
+      'tg_text_link_urls' => array_values(array_keys($linkUrls)),
+      'tg_public_post_url' => $publicPostUrl,
+      'tg_chat_username' => $chatUsername,
+    ];
+  }
+
+  function channel_bridge_media_group_collect(
+    array $payload,
+    int $waitMs = CHANNEL_BRIDGE_MEDIA_GROUP_WAIT_MAX_MS,
+    int $idleMs = CHANNEL_BRIDGE_MEDIA_GROUP_QUIET_MS
+  ): array {
     $sourcePlatform = channel_bridge_norm_platform((string)($payload['source_platform'] ?? ''));
     $sourceChatId = channel_bridge_norm_chat_id((string)($payload['source_chat_id'] ?? ''));
     $mediaGroupId = trim((string)($payload['tg_media_group_id'] ?? ''));
     $sourceMessageId = trim((string)($payload['source_message_id'] ?? ''));
-    $messageText = channel_bridge_normalize_text((string)($payload['message_text'] ?? ''));
-    $payloadTextHtml = trim((string)($payload['tg_text_html'] ?? ''));
-    $payloadPublicPostUrl = trim((string)($payload['tg_public_post_url'] ?? ''));
-    $payloadChatUsername = trim((string)($payload['tg_chat_username'] ?? ''));
-    $payloadTextLinkUrls = [];
-    if (isset($payload['tg_text_link_urls']) && is_array($payload['tg_text_link_urls'])) {
-      foreach ($payload['tg_text_link_urls'] as $url) {
-        $url = trim((string)$url);
-        if ($url !== '') $payloadTextLinkUrls[$url] = true;
-      }
-    }
-
     if ($sourcePlatform !== CHANNEL_BRIDGE_SOURCE_TG || $sourceChatId === '' || $mediaGroupId === '' || $sourceMessageId === '') {
       return ['mode' => 'skip'];
     }
 
-    $singlePhoto = trim((string)($payload['tg_photo_file_id'] ?? ''));
-    $payloadPhotoIds = [];
-    if (isset($payload['tg_photo_file_ids']) && is_array($payload['tg_photo_file_ids'])) {
-      foreach ($payload['tg_photo_file_ids'] as $pid) {
-        $pid = trim((string)$pid);
-        if ($pid !== '') $payloadPhotoIds[$pid] = true;
-      }
-    }
+    channel_bridge_media_group_cleanup(CHANNEL_BRIDGE_MEDIA_GROUP_TTL_SECONDS);
+
+    $waitMs = max(CHANNEL_BRIDGE_MEDIA_GROUP_WAIT_STEP_MS, min(CHANNEL_BRIDGE_MEDIA_GROUP_WAIT_MAX_MS, $waitMs));
+    $stepMs = CHANNEL_BRIDGE_MEDIA_GROUP_WAIT_STEP_MS;
+    $idleMs = max($stepMs, min(CHANNEL_BRIDGE_MEDIA_GROUP_WAIT_MAX_MS, $idleMs));
     $path = channel_bridge_media_group_buffer_path($sourceChatId, $mediaGroupId);
-    $now = microtime(true);
+    $startedAt = microtime(true);
 
     $locked = channel_bridge_media_group_lock_and_read($path);
     if (($locked['ok'] ?? false) !== true) {
@@ -917,172 +1323,111 @@ if (!function_exists('channel_bridge_now')) {
 
     $fp = $locked['fp'];
     $state = is_array($locked['state'] ?? null) ? (array)$locked['state'] : [];
-
-    $flushedAt = (float)($state['flushed_at'] ?? 0);
-    if ($flushedAt > 0) {
-      $age = microtime(true) - $flushedAt;
-      if ($age < 180.0) {
-        channel_bridge_media_group_unlock($fp);
-        return ['mode' => 'pending', 'media_group_id' => $mediaGroupId, 'reason' => 'already_flushed'];
-      }
-      // Старый буфер разрешаем переиспользовать.
-      $state = [];
+    $state = channel_bridge_media_group_clear_stale_dispatch($state, $startedAt);
+    if ((int)($state['sent'] ?? 0) === 1) {
+      channel_bridge_media_group_unlock($fp);
+      return ['mode' => 'sent', 'media_group_id' => $mediaGroupId, 'reason' => 'already_sent'];
     }
 
-    $messageIds = [];
-    $photoIds = [];
-
-    if (isset($state['message_ids']) && is_array($state['message_ids'])) {
-      foreach ($state['message_ids'] as $mid) {
-        $mid = trim((string)$mid);
-        if ($mid !== '') $messageIds[$mid] = true;
-      }
-    }
-    if (isset($state['photo_file_ids']) && is_array($state['photo_file_ids'])) {
-      foreach ($state['photo_file_ids'] as $pid) {
-        $pid = trim((string)$pid);
-        if ($pid !== '') $photoIds[$pid] = true;
-      }
-    }
-
-    $hasNewItems = false;
-    if (!isset($messageIds[$sourceMessageId])) {
-      $messageIds[$sourceMessageId] = true;
-      $hasNewItems = true;
-    }
-    if ($singlePhoto !== '' && !isset($photoIds[$singlePhoto])) {
-      $photoIds[$singlePhoto] = true;
-      $hasNewItems = true;
-    }
-    foreach (array_keys($payloadPhotoIds) as $pid) {
-      if (!isset($photoIds[$pid])) {
-        $photoIds[$pid] = true;
-        $hasNewItems = true;
-      }
-    }
-
-    $state['source_platform'] = CHANNEL_BRIDGE_SOURCE_TG;
-    $state['source_chat_id'] = $sourceChatId;
-    $state['media_group_id'] = $mediaGroupId;
-    $state['message_ids'] = array_keys($messageIds);
-    $state['photo_file_ids'] = array_keys($photoIds);
-    $state['first_seen_at'] = (float)($state['first_seen_at'] ?? $now);
-    $prevTouchedAt = (float)($state['touched_at'] ?? 0);
-    if ($prevTouchedAt <= 0) $prevTouchedAt = $now;
-    $state['touched_at'] = $hasNewItems ? $now : $prevTouchedAt;
-
-    $savedText = channel_bridge_normalize_text((string)($state['message_text'] ?? ''));
-    if ($savedText === '' && $messageText !== '') {
-      $state['message_text'] = $messageText;
-      $state['touched_at'] = $now;
-    } elseif (!isset($state['message_text'])) {
-      $state['message_text'] = '';
-    }
-    if (!isset($state['tg_text_html'])) $state['tg_text_html'] = '';
-    if ((string)$state['tg_text_html'] === '' && $payloadTextHtml !== '') {
-      $state['tg_text_html'] = $payloadTextHtml;
-      $state['touched_at'] = $now;
-    }
-    $stateTextLinkUrls = [];
-    if (isset($state['tg_text_link_urls']) && is_array($state['tg_text_link_urls'])) {
-      foreach ($state['tg_text_link_urls'] as $url) {
-        $url = trim((string)$url);
-        if ($url !== '') $stateTextLinkUrls[$url] = true;
-      }
-    }
-    foreach (array_keys($payloadTextLinkUrls) as $url) {
-      if (!isset($stateTextLinkUrls[$url])) {
-        $stateTextLinkUrls[$url] = true;
-        $state['touched_at'] = $now;
-      }
-    }
-    $state['tg_text_link_urls'] = array_keys($stateTextLinkUrls);
-    if (!isset($state['tg_public_post_url'])) $state['tg_public_post_url'] = '';
-    if (!isset($state['tg_chat_username'])) $state['tg_chat_username'] = '';
-    if ((string)$state['tg_public_post_url'] === '' && $payloadPublicPostUrl !== '') {
-      $state['tg_public_post_url'] = $payloadPublicPostUrl;
-    }
-    if ((string)$state['tg_chat_username'] === '' && $payloadChatUsername !== '') {
-      $state['tg_chat_username'] = $payloadChatUsername;
-    }
-
+    $added = channel_bridge_media_group_state_add_item($state, $payload, $startedAt);
+    $state = is_array($added['state'] ?? null) ? (array)$added['state'] : [];
     channel_bridge_media_group_write_and_unlock($fp, $state);
 
-    if ($waitMs > 0) {
-      usleep($waitMs * 1000);
+    $deadlineAt = $startedAt + ($waitMs / 1000.0);
+    while (true) {
+      $remainingMs = (int)floor(($deadlineAt - microtime(true)) * 1000);
+      if ($remainingMs > 0) {
+        usleep(min($stepMs, $remainingMs) * 1000);
+      }
+
+      $lockedCheck = channel_bridge_media_group_lock_and_read($path);
+      if (($lockedCheck['ok'] ?? false) !== true) {
+        return ['mode' => 'error', 'error' => (string)($lockedCheck['error'] ?? 'BUFFER_RELOCK_ERROR')];
+      }
+
+      $fpCheck = $lockedCheck['fp'];
+      $stateCheck = is_array($lockedCheck['state'] ?? null) ? (array)$lockedCheck['state'] : [];
+      $stateCheck = channel_bridge_media_group_clear_stale_dispatch($stateCheck, microtime(true));
+      if ((int)($stateCheck['sent'] ?? 0) === 1) {
+        channel_bridge_media_group_unlock($fpCheck);
+        return ['mode' => 'sent', 'media_group_id' => $mediaGroupId, 'reason' => 'already_sent'];
+      }
+
+      $lastSeenAt = (float)($stateCheck['last_seen_at'] ?? $startedAt);
+      if ($lastSeenAt <= 0) {
+        $lastSeenAt = $startedAt;
+      }
+      $itemCount = channel_bridge_media_group_item_count($stateCheck);
+
+      $now = microtime(true);
+      $firstSeenAt = (float)($stateCheck['first_seen_at'] ?? $now);
+      if ($firstSeenAt <= 0) {
+        $firstSeenAt = $now;
+      }
+      $ageMs = (int)round(($now - $firstSeenAt) * 1000);
+      $idleAgeMs = (int)round(($now - $lastSeenAt) * 1000);
+      $deadlineReached = ($now >= $deadlineAt);
+      $quietReached = ($idleAgeMs >= $idleMs);
+      $windowMature = ($ageMs >= CHANNEL_BRIDGE_MEDIA_GROUP_MIN_AGE_MS);
+      if ((int)($stateCheck['dispatching'] ?? 0) === 1) {
+        channel_bridge_media_group_write_and_unlock($fpCheck, $stateCheck);
+        return [
+          'mode' => 'pending',
+          'media_group_id' => $mediaGroupId,
+          'reason' => 'dispatch_in_progress',
+          'message_count' => $itemCount,
+        ];
+      }
+
+      $hasMinimumItems = ($itemCount >= CHANNEL_BRIDGE_MEDIA_GROUP_MIN_ITEMS);
+      if (!$windowMature) {
+        if ($deadlineReached) {
+          channel_bridge_media_group_write_and_unlock($fpCheck, $stateCheck);
+          return [
+            'mode' => 'pending',
+            'media_group_id' => $mediaGroupId,
+            'reason' => 'await_window',
+            'message_count' => $itemCount,
+            'age_ms' => $ageMs,
+            'idle_ms' => $idleAgeMs,
+          ];
+        }
+
+        channel_bridge_media_group_unlock($fpCheck);
+        continue;
+      }
+
+      if ($hasMinimumItems && $quietReached) {
+        // proceed to dispatch below
+      } elseif (!$deadlineReached) {
+        channel_bridge_media_group_unlock($fpCheck);
+        continue;
+      }
+
+      $dispatchToken = hash('sha256', $sourceChatId . '|' . $mediaGroupId . '|' . microtime(true) . '|' . mt_rand(1, PHP_INT_MAX));
+      $stateCheck['dispatching'] = 1;
+      $stateCheck['dispatch_token'] = $dispatchToken;
+      $stateCheck['dispatch_revision'] = (int)($stateCheck['revision'] ?? 0);
+      $stateCheck['dispatch_started_at'] = $now;
+
+      $aggPayload = channel_bridge_media_group_payload_from_state($stateCheck);
+      $messageCount = count((array)($aggPayload['tg_media_group_message_ids'] ?? []));
+      $photoCount = count((array)($aggPayload['tg_photo_file_ids'] ?? []));
+
+      $stateCheck['items_count'] = count((array)($stateCheck['items'] ?? []));
+      channel_bridge_media_group_write_and_unlock($fpCheck, $stateCheck);
+
+      return [
+        'mode' => 'ready',
+        'payload' => $aggPayload,
+        'media_group_id' => $mediaGroupId,
+        'dispatch_token' => $dispatchToken,
+        'message_count' => $messageCount,
+        'photo_count' => $photoCount,
+        'age_ms' => $ageMs,
+        'idle_ms' => $idleAgeMs,
+      ];
     }
-
-    $locked2 = channel_bridge_media_group_lock_and_read($path);
-    if (($locked2['ok'] ?? false) !== true) {
-      return ['mode' => 'error', 'error' => (string)($locked2['error'] ?? 'BUFFER_RELOCK_ERROR')];
-    }
-    $fp2 = $locked2['fp'];
-    $state2 = is_array($locked2['state'] ?? null) ? (array)$locked2['state'] : [];
-
-    $flushedAt2 = (float)($state2['flushed_at'] ?? 0);
-    if ($flushedAt2 > 0) {
-      channel_bridge_media_group_unlock($fp2);
-      return ['mode' => 'pending', 'media_group_id' => $mediaGroupId, 'reason' => 'already_flushed'];
-    }
-
-    $touchedAt = (float)($state2['touched_at'] ?? 0);
-    if ($touchedAt <= 0) {
-      $touchedAt = $now;
-    }
-    $firstSeenAt = (float)($state2['first_seen_at'] ?? $touchedAt);
-    if ($firstSeenAt <= 0) $firstSeenAt = $touchedAt;
-
-    $msgIds = [];
-    foreach ((array)($state2['message_ids'] ?? []) as $mid) {
-      $mid = trim((string)$mid);
-      if (preg_match('~^\d+$~', $mid)) $msgIds[] = $mid;
-    }
-    $msgIds = array_values(array_unique($msgIds));
-    sort($msgIds, SORT_NUMERIC);
-
-    $imgIds = [];
-    foreach ((array)($state2['photo_file_ids'] ?? []) as $pid) {
-      $pid = trim((string)$pid);
-      if ($pid !== '') $imgIds[] = $pid;
-    }
-    $imgIds = array_values(array_unique($imgIds));
-
-    $idleSec = ($idleMs > 0) ? ($idleMs / 1000.0) : 1.2;
-    $maxCollectSec = 20.0;
-    $now2 = microtime(true);
-    $isIdle = (($now2 - $touchedAt) >= $idleSec);
-    $isExpired = (($now2 - $firstSeenAt) >= $maxCollectSec);
-    $hasMinimumItems = (count($msgIds) >= 2) || (count($imgIds) >= 2);
-    $isReady = (($hasMinimumItems && $isIdle) || $isExpired);
-    if (!$isReady) {
-      $reason = $hasMinimumItems ? 'await_idle' : 'await_more_items';
-      channel_bridge_media_group_unlock($fp2);
-      return ['mode' => 'pending', 'media_group_id' => $mediaGroupId, 'reason' => $reason];
-    }
-
-    $aggPayload = [
-      'source_platform' => CHANNEL_BRIDGE_SOURCE_TG,
-      'source_chat_id' => $sourceChatId,
-      'source_message_id' => 'mg:' . $mediaGroupId,
-      'message_text' => channel_bridge_normalize_text((string)($state2['message_text'] ?? '')),
-      'tg_text_html' => trim((string)($state2['tg_text_html'] ?? '')),
-      'tg_media_group_id' => $mediaGroupId,
-      'tg_media_group_message_ids' => $msgIds,
-      'tg_photo_file_ids' => $imgIds,
-      'tg_photo_file_id' => ($imgIds[0] ?? ''),
-      'tg_text_link_urls' => array_values(array_unique(array_filter(array_map('trim', (array)($state2['tg_text_link_urls'] ?? [])), static function ($url) {
-        return $url !== '';
-      }))),
-      'tg_public_post_url' => trim((string)($state2['tg_public_post_url'] ?? '')),
-      'tg_chat_username' => trim((string)($state2['tg_chat_username'] ?? '')),
-    ];
-
-    $state2['flushed_at'] = microtime(true);
-    $state2['message_ids'] = $msgIds;
-    $state2['photo_file_ids'] = $imgIds;
-    channel_bridge_media_group_write_and_unlock($fp2, $state2);
-
-    return ['mode' => 'ready', 'payload' => $aggPayload, 'media_group_id' => $mediaGroupId];
   }
 
   /**
@@ -3081,6 +3426,190 @@ if (!function_exists('channel_bridge_now')) {
   }
 
   /**
+   * channel_bridge_photo_storage_base_dir()
+   * Returns base dir for cached Telegram photos.
+   *
+   * @return string
+   */
+  function channel_bridge_photo_storage_base_dir(): string
+  {
+    $base = rtrim(ROOT_PATH, '/\\') . '/storage/channel_bridge/photos';
+    if (!is_dir($base)) {
+      @mkdir($base, 0755, true);
+    }
+    return $base;
+  }
+
+  /**
+   * channel_bridge_photo_storage_date_dir()
+   * Returns date-based folder for cached photos.
+   *
+   * @return string
+   */
+  function channel_bridge_photo_storage_date_dir(): string
+  {
+    $date = date('Y-m-d');
+    $dir = rtrim(channel_bridge_photo_storage_base_dir(), '/\\') . '/' . $date;
+    if (!is_dir($dir)) {
+      @mkdir($dir, 0755, true);
+    }
+    return $dir;
+  }
+
+  /**
+   * channel_bridge_photo_storage_cleanup()
+   * Removes cached photos older than $ttlDays.
+   *
+   * @param int $ttlDays
+   * @return int
+   */
+  function channel_bridge_photo_storage_cleanup(int $ttlDays = 7): int
+  {
+    if ($ttlDays < 1) $ttlDays = 7;
+    $base = channel_bridge_photo_storage_base_dir();
+    if (!is_dir($base)) return 0;
+
+    $removed = 0;
+    $cutoff = time() - ($ttlDays * 86400);
+    $dirs = glob($base . '/*', GLOB_ONLYDIR) ?: [];
+    foreach ($dirs as $dir) {
+      $dir = (string)$dir;
+      $stat = @stat($dir);
+      $mtime = is_array($stat) ? (int)($stat['mtime'] ?? 0) : 0;
+      if ($mtime > 0 && $mtime < $cutoff) {
+        $files = glob($dir . '/*') ?: [];
+        foreach ($files as $file) {
+          if (is_file($file)) {
+            if (@unlink($file)) $removed++;
+          }
+        }
+        @rmdir($dir);
+      }
+    }
+
+    return $removed;
+  }
+
+  /**
+   * channel_bridge_tg_download_photo_to_storage()
+   * Downloads a Telegram file_id to local storage with retries.
+   *
+   * @param string $tgToken
+   * @param string $fileId
+   * @param int $retries
+   * @param int $retrySleepMs
+   * @return array<string,mixed>
+   */
+  function channel_bridge_tg_download_photo_to_storage(string $tgToken, string $fileId, int $retries = 2, int $retrySleepMs = 500): array
+  {
+    $tgToken = trim($tgToken);
+    $fileId = trim($fileId);
+    if ($tgToken === '' || $fileId === '') {
+      return ['ok' => false, 'error' => 'TG_FILE_PARAMS_EMPTY'];
+    }
+
+    $attempts = max(1, $retries + 1);
+    for ($i = 0; $i < $attempts; $i++) {
+      $fileUrlRes = channel_bridge_tg_build_file_download_url($tgToken, $fileId);
+      if (($fileUrlRes['ok'] ?? false) !== true) {
+        if ($i + 1 < $attempts) {
+          usleep($retrySleepMs * 1000);
+          continue;
+        }
+        return ['ok' => false, 'error' => (string)($fileUrlRes['error'] ?? 'TG_FILE_URL_ERROR'), 'raw' => $fileUrlRes];
+      }
+
+      $download = channel_bridge_http_download_to_tmp((string)($fileUrlRes['url'] ?? ''), 20);
+      if (($download['ok'] ?? false) !== true) {
+        if ($i + 1 < $attempts) {
+          usleep($retrySleepMs * 1000);
+          continue;
+        }
+        return ['ok' => false, 'error' => (string)($download['error'] ?? 'TG_FILE_DOWNLOAD_ERROR'), 'raw' => $download];
+      }
+
+      $filePath = trim((string)($fileUrlRes['file_path'] ?? ''));
+      $ext = '';
+      if ($filePath !== '') {
+        $ext = strtolower((string)pathinfo($filePath, PATHINFO_EXTENSION));
+      }
+      if ($ext === '') {
+        $contentType = (string)($download['content_type'] ?? '');
+        if (stripos($contentType, 'image/jpeg') !== false) $ext = 'jpg';
+        elseif (stripos($contentType, 'image/png') !== false) $ext = 'png';
+        elseif (stripos($contentType, 'image/webp') !== false) $ext = 'webp';
+        elseif (stripos($contentType, 'image/gif') !== false) $ext = 'gif';
+      }
+      if ($ext === '') $ext = 'bin';
+
+      $dir = channel_bridge_photo_storage_date_dir();
+      $name = 'tg_' . date('His') . '_' . substr(sha1($fileId), 0, 12) . '.' . $ext;
+      $dest = rtrim($dir, '/\\') . '/' . $name;
+
+      $tmpPath = (string)($download['path'] ?? '');
+      if ($tmpPath === '' || !is_file($tmpPath)) {
+        return ['ok' => false, 'error' => 'TMP_FILE_MISSING'];
+      }
+
+      if (@rename($tmpPath, $dest)) {
+        return ['ok' => true, 'path' => $dest];
+      }
+      if (@copy($tmpPath, $dest)) {
+        @unlink($tmpPath);
+        return ['ok' => true, 'path' => $dest];
+      }
+
+      @unlink($tmpPath);
+      return ['ok' => false, 'error' => 'FILE_MOVE_FAILED'];
+    }
+
+    return ['ok' => false, 'error' => 'DOWNLOAD_FAILED'];
+  }
+
+  /**
+   * channel_bridge_tg_preload_photos()
+   * Downloads Telegram photos to local storage and enriches payload with local paths.
+   *
+   * @param array<string,mixed> $settings
+   * @param array<string,mixed> $payload
+   * @return array<string,mixed>
+   */
+  function channel_bridge_tg_preload_photos(array $settings, array $payload): array
+  {
+    $sourcePlatform = channel_bridge_norm_platform((string)($payload['source_platform'] ?? ''));
+    if ($sourcePlatform !== CHANNEL_BRIDGE_SOURCE_TG) return $payload;
+
+    $tgToken = trim((string)($settings['tg_bot_token'] ?? ''));
+    if ($tgToken === '') return $payload;
+
+    $fileIds = channel_bridge_tg_source_photo_file_ids($payload);
+    if (!$fileIds) return $payload;
+
+    channel_bridge_photo_storage_cleanup(7);
+
+    $local = [];
+    $localMap = [];
+    foreach ($fileIds as $fileId) {
+      $res = channel_bridge_tg_download_photo_to_storage($tgToken, $fileId, 2, 500);
+      if (($res['ok'] ?? false) === true) {
+        $path = trim((string)($res['path'] ?? ''));
+        if ($path !== '') {
+          $local[$path] = true;
+          $localMap[$fileId] = $path;
+        }
+      }
+    }
+
+    if ($local) {
+      $payload['cb_photo_local_map'] = $localMap;
+      $payload['cb_photo_local_paths'] = array_values(array_keys($local));
+      $payload['cb_photo_local_path'] = (string)array_key_first($local);
+    }
+
+    return $payload;
+  }
+
+  /**
    * channel_bridge_http_post_multipart_file()
    * Выполняет multipart/form-data POST (поле data=@file).
    *
@@ -3151,6 +3680,32 @@ if (!function_exists('channel_bridge_now')) {
     }
 
     $single = trim((string)($sourceMeta['tg_photo_file_id'] ?? ''));
+    if ($single !== '') $out[$single] = true;
+
+    return array_keys($out);
+  }
+
+  /**
+   * channel_bridge_tg_source_photo_local_paths()
+   * Returns list of cached local photo paths from sourceMeta.
+   *
+   * @param array<string,mixed> $sourceMeta
+   * @return array<int,string>
+   */
+  function channel_bridge_tg_source_photo_local_paths(array $sourceMeta): array
+  {
+    $sourcePlatform = channel_bridge_norm_platform((string)($sourceMeta['source_platform'] ?? ''));
+    if ($sourcePlatform !== CHANNEL_BRIDGE_SOURCE_TG) return [];
+
+    $out = [];
+    if (isset($sourceMeta['cb_photo_local_paths']) && is_array($sourceMeta['cb_photo_local_paths'])) {
+      foreach ($sourceMeta['cb_photo_local_paths'] as $path) {
+        $path = trim((string)$path);
+        if ($path !== '') $out[$path] = true;
+      }
+    }
+
+    $single = trim((string)($sourceMeta['cb_photo_local_path'] ?? ''));
     if ($single !== '') $out[$single] = true;
 
     return array_keys($out);
@@ -3269,6 +3824,99 @@ if (!function_exists('channel_bridge_now')) {
         @unlink($tmpPath);
       }
     }
+  }
+
+  /**
+   * channel_bridge_max_make_image_attachment_from_local_file()
+   * Builds one image attachment for MAX from a local file path.
+   *
+   * @param array<string,mixed> $settings
+   * @param string $filePath
+   * @return array<string,mixed>
+   */
+  function channel_bridge_max_make_image_attachment_from_local_file(array $settings, string $filePath): array
+  {
+    $filePath = trim($filePath);
+    if ($filePath === '' || !is_file($filePath)) {
+      return ['ok' => false, 'error' => 'LOCAL_FILE_NOT_FOUND'];
+    }
+
+    $apiKey = trim((string)($settings['max_api_key'] ?? ''));
+    if (stripos($apiKey, 'Bearer ') === 0) $apiKey = trim((string)substr($apiKey, 7));
+    if (stripos($apiKey, 'OAuth ') === 0) $apiKey = trim((string)substr($apiKey, 6));
+    if ($apiKey === '') {
+      return ['ok' => false, 'error' => 'MAX_API_KEY_EMPTY'];
+    }
+
+    $baseUrl = rtrim(trim((string)($settings['max_base_url'] ?? '')), '/');
+    if ($baseUrl === '') {
+      return ['ok' => false, 'error' => 'MAX_BASE_URL_EMPTY'];
+    }
+
+    $uploadInfo = channel_bridge_http_post_json($baseUrl . '/uploads?type=image', [], [
+      'Authorization: ' . $apiKey,
+    ], 20);
+    if (($uploadInfo['ok'] ?? false) !== true) {
+      return ['ok' => false, 'error' => (string)($uploadInfo['error'] ?? 'MAX_UPLOAD_URL_HTTP_ERROR'), 'raw' => $uploadInfo];
+    }
+
+    $uploadInfoCode = (int)($uploadInfo['http_code'] ?? 0);
+    if ($uploadInfoCode < 200 || $uploadInfoCode >= 300) {
+      return ['ok' => false, 'error' => 'MAX_UPLOAD_URL_HTTP_' . $uploadInfoCode, 'raw' => $uploadInfo];
+    }
+
+    $uploadJson = (array)($uploadInfo['json'] ?? []);
+    $uploadUrl = trim((string)($uploadJson['url'] ?? ''));
+    if ($uploadUrl === '' && isset($uploadJson['result']) && is_array($uploadJson['result'])) {
+      $uploadUrl = trim((string)($uploadJson['result']['url'] ?? ''));
+    }
+    if ($uploadUrl === '') {
+      return ['ok' => false, 'error' => 'MAX_UPLOAD_URL_EMPTY', 'raw' => $uploadInfo];
+    }
+
+    $uploadHeadersRaw = null;
+    if (isset($uploadJson['headers'])) {
+      $uploadHeadersRaw = $uploadJson['headers'];
+    } elseif (isset($uploadJson['result']) && is_array($uploadJson['result']) && isset($uploadJson['result']['headers'])) {
+      $uploadHeadersRaw = $uploadJson['result']['headers'];
+    }
+    $uploadHeaders = [];
+    if (is_array($uploadHeadersRaw)) {
+      foreach ($uploadHeadersRaw as $hk => $hv) {
+        if (is_int($hk)) {
+          $h = trim((string)$hv);
+          if ($h !== '') $uploadHeaders[] = $h;
+          continue;
+        }
+        $hName = trim((string)$hk);
+        $hVal = trim((string)$hv);
+        if ($hName === '' || $hVal === '') continue;
+        $uploadHeaders[] = $hName . ': ' . $hVal;
+      }
+    }
+
+    $uploadFile = channel_bridge_http_post_multipart_file($uploadUrl, $filePath, $uploadHeaders, 40);
+    if (($uploadFile['ok'] ?? false) !== true) {
+      return ['ok' => false, 'error' => (string)($uploadFile['error'] ?? 'MAX_UPLOAD_FILE_HTTP_ERROR'), 'raw' => $uploadFile];
+    }
+
+    $uploadFileCode = (int)($uploadFile['http_code'] ?? 0);
+    if ($uploadFileCode < 200 || $uploadFileCode >= 300) {
+      return ['ok' => false, 'error' => 'MAX_UPLOAD_FILE_HTTP_' . $uploadFileCode, 'raw' => $uploadFile];
+    }
+
+    $uploadPayload = (array)($uploadFile['json'] ?? []);
+    if (!$uploadPayload) {
+      return ['ok' => false, 'error' => 'MAX_UPLOAD_PAYLOAD_EMPTY', 'raw' => $uploadFile];
+    }
+
+    return [
+      'ok' => true,
+      'attachment' => [
+        'type' => 'image',
+        'payload' => $uploadPayload,
+      ],
+    ];
   }
 
   /**
@@ -3588,29 +4236,75 @@ if (!function_exists('channel_bridge_now')) {
       return ['ok' => false, 'error' => 'MAX_RECIPIENT_EMPTY'];
     }
 
+    $localMap = is_array(($sourceMeta['cb_photo_local_map'] ?? null)) ? (array)($sourceMeta['cb_photo_local_map'] ?? []) : [];
+    $localPaths = channel_bridge_tg_source_photo_local_paths($sourceMeta);
     $photoIds = channel_bridge_tg_source_photo_file_ids($sourceMeta);
     $attachmentErrors = [];
-    foreach ($photoIds as $pid) {
-      $imgAttachment = channel_bridge_max_make_image_attachment($settings, $pid);
-      if (($imgAttachment['ok'] ?? false) === true && is_array($imgAttachment['attachment'] ?? null)) {
-        if (!isset($payload['attachments']) || !is_array($payload['attachments'])) {
-          $payload['attachments'] = [];
-        }
-        $payload['attachments'][] = $imgAttachment['attachment'];
-        continue;
+    if ($localMap) {
+      if (!$photoIds) {
+        $photoIds = array_keys($localMap);
       }
-      $attachmentErrors[] = trim((string)($imgAttachment['error'] ?? 'MAX_ATTACHMENT_ERROR'));
+      foreach ($photoIds as $pid) {
+        $localPath = trim((string)($localMap[$pid] ?? ''));
+        if ($localPath !== '' && is_file($localPath)) {
+          $imgAttachment = channel_bridge_max_make_image_attachment_from_local_file($settings, $localPath);
+        } else {
+          $imgAttachment = channel_bridge_max_make_image_attachment($settings, $pid);
+        }
+        if (($imgAttachment['ok'] ?? false) === true && is_array($imgAttachment['attachment'] ?? null)) {
+          if (!isset($payload['attachments']) || !is_array($payload['attachments'])) {
+            $payload['attachments'] = [];
+          }
+          $payload['attachments'][] = $imgAttachment['attachment'];
+          continue;
+        }
+        $attachmentErrors[] = trim((string)($imgAttachment['error'] ?? 'MAX_ATTACHMENT_ERROR'));
+      }
+    } elseif ($localPaths) {
+      foreach ($localPaths as $path) {
+        $imgAttachment = channel_bridge_max_make_image_attachment_from_local_file($settings, $path);
+        if (($imgAttachment['ok'] ?? false) === true && is_array($imgAttachment['attachment'] ?? null)) {
+          if (!isset($payload['attachments']) || !is_array($payload['attachments'])) {
+            $payload['attachments'] = [];
+          }
+          $payload['attachments'][] = $imgAttachment['attachment'];
+          continue;
+        }
+        $attachmentErrors[] = trim((string)($imgAttachment['error'] ?? 'MAX_ATTACHMENT_ERROR'));
+      }
+    } else {
+      foreach ($photoIds as $pid) {
+        $imgAttachment = channel_bridge_max_make_image_attachment($settings, $pid);
+        if (($imgAttachment['ok'] ?? false) === true && is_array($imgAttachment['attachment'] ?? null)) {
+          if (!isset($payload['attachments']) || !is_array($payload['attachments'])) {
+            $payload['attachments'] = [];
+          }
+          $payload['attachments'][] = $imgAttachment['attachment'];
+          continue;
+        }
+        $attachmentErrors[] = trim((string)($imgAttachment['error'] ?? 'MAX_ATTACHMENT_ERROR'));
+      }
     }
     if ($attachmentErrors && function_exists('audit_log')) {
       audit_log(CHANNEL_BRIDGE_MODULE_CODE, 'max_attachment_skip', 'warn', [
         'errors' => implode(';', $attachmentErrors),
         'source_chat_id' => (string)($sourceMeta['source_chat_id'] ?? ''),
         'source_message_id' => (string)($sourceMeta['source_message_id'] ?? ''),
-        'photos_total' => count($photoIds),
+        'photos_total' => $localMap ? count($photoIds) : ($localPaths ? count($localPaths) : count($photoIds)),
         'photos_failed' => count($attachmentErrors),
       ]);
     }
-
+    if (($localMap || $localPaths || $photoIds) && $attachmentErrors) {
+      return [
+        'ok' => false,
+        'error' => 'MAX_ATTACHMENT_PARTIAL',
+        'raw' => [
+          'photos_total' => $localMap ? count($photoIds) : ($localPaths ? count($localPaths) : count($photoIds)),
+          'photos_failed' => count($attachmentErrors),
+          'errors' => $attachmentErrors,
+        ],
+      ];
+    }
     $url = $baseUrl . '/' . ltrim($sendPath, '/');
     $url .= '?' . http_build_query($query);
     $http = channel_bridge_http_post_json($url, $payload, [
@@ -3794,6 +4488,10 @@ if (!function_exists('channel_bridge_now')) {
 
     $sourcePlatform = channel_bridge_norm_platform((string)($payload['source_platform'] ?? ''));
     $mediaGroupId = trim((string)($payload['tg_media_group_id'] ?? ''));
+    $mediaGroupDispatchToken = '';
+    if ($sourcePlatform === CHANNEL_BRIDGE_SOURCE_TG) {
+      $payload = channel_bridge_tg_preload_photos($settings, $payload);
+    }
     if ($sourcePlatform === CHANNEL_BRIDGE_SOURCE_TG && $mediaGroupId !== '' && stripos((string)($payload['source_message_id'] ?? ''), 'mg:') !== 0) {
       $mg = channel_bridge_media_group_collect($payload);
       $mgMode = trim((string)($mg['mode'] ?? ''));
@@ -3813,6 +4511,16 @@ if (!function_exists('channel_bridge_now')) {
         ]);
       }
 
+      if ($mgMode === 'sent') {
+        return [
+          'ok' => true,
+          'reason' => 'media_group_already_sent',
+          'targets' => 0,
+          'sent' => 0,
+          'failed' => 0,
+          'media_group_id' => $mediaGroupId,
+        ];
+      }
       if ($mgMode === 'pending') {
         return [
           'ok' => true,
@@ -3825,6 +4533,7 @@ if (!function_exists('channel_bridge_now')) {
       }
       if ($mgMode === 'ready' && is_array($mg['payload'] ?? null)) {
         $payload = (array)$mg['payload'];
+        $mediaGroupDispatchToken = trim((string)($mg['dispatch_token'] ?? ''));
       } elseif ($mgMode === 'error') {
         return [
           'ok' => false,
@@ -3837,6 +4546,9 @@ if (!function_exists('channel_bridge_now')) {
     $sourcePlatform = channel_bridge_norm_platform((string)($payload['source_platform'] ?? ''));
     $sourceChatId = channel_bridge_norm_chat_id((string)($payload['source_chat_id'] ?? ''));
     $sourceMessageId = trim((string)($payload['source_message_id'] ?? ''));
+    if ($mediaGroupDispatchToken === '' && $sourcePlatform === CHANNEL_BRIDGE_SOURCE_TG && $mediaGroupId !== '' && stripos($sourceMessageId, 'mg:') === 0) {
+      $mediaGroupDispatchToken = trim((string)($payload['cb_media_group_dispatch_token'] ?? ''));
+    }
     $sourceMessageIdDb = ($sourceMessageId === '') ? null : $sourceMessageId;
     $messageText = channel_bridge_normalize_text((string)($payload['message_text'] ?? ''));
 
@@ -3852,6 +4564,19 @@ if (!function_exists('channel_bridge_now')) {
     );
     if ($messageText === '' && !$canDispatchWithoutText) {
       return ['ok' => false, 'reason' => 'message_required', 'message' => channel_bridge_t('channel_bridge.error_message_required')];
+    }
+    if ($sourcePlatform === CHANNEL_BRIDGE_SOURCE_TG) {
+      $photoIds = channel_bridge_tg_source_photo_file_ids($payload);
+      $localPaths = channel_bridge_tg_source_photo_local_paths($payload);
+      if (!$photoIds && !$localPaths) {
+        return [
+          'ok' => true,
+          'reason' => 'skip_no_photo',
+          'targets' => 0,
+          'sent' => 0,
+          'failed' => 0,
+        ];
+      }
     }
 
     $rawPayload = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -3886,56 +4611,112 @@ if (!function_exists('channel_bridge_now')) {
       $inboxId = (int)$pdo->lastInsertId();
     } catch (Throwable $e) {
       if ((string)$e->getCode() === '23000') {
-        return [
-          'ok' => true,
-          'reason' => 'duplicate',
-          'message' => channel_bridge_t('channel_bridge.ingest_duplicate'),
-          'targets' => 0,
-          'sent' => 0,
-          'failed' => 0,
-        ];
-      }
-      throw $e;
-    }
-
-    $routes = channel_bridge_collect_routes_for_source($pdo, $sourcePlatform, $sourceChatId);
-    $targets = count($routes);
-    $sent = 0;
-    $failed = 0;
-    $skipped = 0;
-    $dispatchText = $messageText;
-    $dispatchMaxHtml = trim((string)($payload['tg_text_html'] ?? ''));
-    $repostSourceUrl = '';
-    if ($sourcePlatform === CHANNEL_BRIDGE_SOURCE_TG) {
-      $repostSourceUrl = channel_bridge_tg_post_url_from_meta([
-        'source_chat_id' => $sourceChatId,
-        'source_message_id' => $sourceMessageId,
-        'tg_media_group_message_ids' => (array)($payload['tg_media_group_message_ids'] ?? []),
-        'tg_public_post_url' => (string)($payload['tg_public_post_url'] ?? ''),
-        'tg_chat_username' => (string)($payload['tg_chat_username'] ?? ''),
-      ]);
-    }
-    $linkRules = channel_bridge_link_suffix_rules_list($pdo, true);
-    if ($linkRules) {
-      $suffixApply = channel_bridge_apply_link_suffix_rules($dispatchText, $linkRules, $repostSourceUrl);
-      $dispatchText = channel_bridge_normalize_text((string)($suffixApply['text'] ?? $dispatchText));
-      if ($dispatchMaxHtml !== '') {
-        $suffixApplyHtml = channel_bridge_apply_link_suffix_rules($dispatchMaxHtml, $linkRules, $repostSourceUrl);
-        $dispatchMaxHtml = trim((string)($suffixApplyHtml['text'] ?? $dispatchMaxHtml));
+        $isMediaGroupRetry = (
+          $sourcePlatform === CHANNEL_BRIDGE_SOURCE_TG
+          && $mediaGroupId !== ''
+          && stripos($sourceMessageId, 'mg:') === 0
+        );
+        if ($isMediaGroupRetry) {
+          $inboxId = 0;
+        } else {
+          return [
+            'ok' => true,
+            'reason' => 'duplicate',
+            'message' => channel_bridge_t('channel_bridge.ingest_duplicate'),
+            'targets' => 0,
+            'sent' => 0,
+            'failed' => 0,
+          ];
+        }
+      } else {
+        throw $e;
       }
     }
 
-    foreach ($routes as $route) {
-      $routeId = (int)($route['id'] ?? 0);
-      $targetPlatform = channel_bridge_norm_platform((string)($route['target_platform'] ?? ''));
-      $targetChatId = channel_bridge_norm_chat_id((string)($route['target_chat_id'] ?? ''));
-      $blacklistMatch = channel_bridge_route_blacklist_match(
-        (string)($route['blacklist_domains'] ?? ''),
-        $messageText,
-        (array)($payload['tg_text_link_urls'] ?? [])
-      );
-      if (($blacklistMatch['blocked'] ?? false) === true) {
-        $skipped++;
+    $isAggregatedMediaGroup = (
+      $sourcePlatform === CHANNEL_BRIDGE_SOURCE_TG
+      && $mediaGroupId !== ''
+      && stripos($sourceMessageId, 'mg:') === 0
+    );
+
+    try {
+      $routes = channel_bridge_collect_routes_for_source($pdo, $sourcePlatform, $sourceChatId);
+      $targets = count($routes);
+      $sent = 0;
+      $failed = 0;
+      $skipped = 0;
+      $dispatchText = $messageText;
+      $dispatchMaxHtml = trim((string)($payload['tg_text_html'] ?? ''));
+      $repostSourceUrl = '';
+      if ($sourcePlatform === CHANNEL_BRIDGE_SOURCE_TG) {
+        $repostSourceUrl = channel_bridge_tg_post_url_from_meta([
+          'source_chat_id' => $sourceChatId,
+          'source_message_id' => $sourceMessageId,
+          'tg_media_group_message_ids' => (array)($payload['tg_media_group_message_ids'] ?? []),
+          'tg_public_post_url' => (string)($payload['tg_public_post_url'] ?? ''),
+          'tg_chat_username' => (string)($payload['tg_chat_username'] ?? ''),
+        ]);
+      }
+      $linkRules = channel_bridge_link_suffix_rules_list($pdo, true);
+      if ($linkRules) {
+        $suffixApply = channel_bridge_apply_link_suffix_rules($dispatchText, $linkRules, $repostSourceUrl);
+        $dispatchText = channel_bridge_normalize_text((string)($suffixApply['text'] ?? $dispatchText));
+        if ($dispatchMaxHtml !== '') {
+          $suffixApplyHtml = channel_bridge_apply_link_suffix_rules($dispatchMaxHtml, $linkRules, $repostSourceUrl);
+          $dispatchMaxHtml = trim((string)($suffixApplyHtml['text'] ?? $dispatchMaxHtml));
+        }
+      }
+
+      foreach ($routes as $route) {
+        $routeId = (int)($route['id'] ?? 0);
+        $targetPlatform = channel_bridge_norm_platform((string)($route['target_platform'] ?? ''));
+        $targetChatId = channel_bridge_norm_chat_id((string)($route['target_chat_id'] ?? ''));
+        $blacklistMatch = channel_bridge_route_blacklist_match(
+          (string)($route['blacklist_domains'] ?? ''),
+          $messageText,
+          (array)($payload['tg_text_link_urls'] ?? [])
+        );
+        if (($blacklistMatch['blocked'] ?? false) === true) {
+          $skipped++;
+
+          channel_bridge_log_dispatch($pdo, [
+            'route_id' => $routeId,
+            'source_platform' => $sourcePlatform,
+            'source_chat_id' => $sourceChatId,
+            'source_message_id' => $sourceMessageId,
+            'target_platform' => $targetPlatform,
+            'target_chat_id' => $targetChatId,
+            'message_text' => $dispatchText,
+            'send_status' => 'skipped',
+            'error_text' => 'blocked_substring: ' . implode(', ', (array)($blacklistMatch['matched_rules'] ?? [])),
+            'response_raw' => json_encode([
+              'reason' => 'blocked_substring',
+              'matched_rules' => (array)($blacklistMatch['matched_rules'] ?? []),
+              'post_urls' => (array)($blacklistMatch['post_urls'] ?? []),
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+          ]);
+
+          continue;
+        }
+
+        $send = channel_bridge_send_by_route($settings, $route, $dispatchText, [
+          'source_platform' => $sourcePlatform,
+          'source_chat_id' => $sourceChatId,
+          'source_message_id' => $sourceMessageId,
+          'tg_media_group_id' => trim((string)($payload['tg_media_group_id'] ?? '')),
+          'tg_media_group_message_ids' => (array)($payload['tg_media_group_message_ids'] ?? []),
+          'tg_photo_file_ids' => (array)($payload['tg_photo_file_ids'] ?? []),
+          'tg_photo_file_id' => trim((string)($payload['tg_photo_file_id'] ?? '')),
+          'cb_photo_local_map' => (array)($payload['cb_photo_local_map'] ?? []),
+          'cb_photo_local_paths' => (array)($payload['cb_photo_local_paths'] ?? []),
+          'cb_photo_local_path' => trim((string)($payload['cb_photo_local_path'] ?? '')),
+          'tg_text_link_urls' => (array)($payload['tg_text_link_urls'] ?? []),
+          'max_text_html' => $dispatchMaxHtml,
+          'tg_public_post_url' => (string)($payload['tg_public_post_url'] ?? ''),
+          'tg_chat_username' => (string)($payload['tg_chat_username'] ?? ''),
+        ]);
+        $ok = (($send['ok'] ?? false) === true);
+        if ($ok) $sent++; else $failed++;
 
         channel_bridge_log_dispatch($pdo, [
           'route_id' => $routeId,
@@ -3945,57 +4726,33 @@ if (!function_exists('channel_bridge_now')) {
           'target_platform' => $targetPlatform,
           'target_chat_id' => $targetChatId,
           'message_text' => $dispatchText,
-          'send_status' => 'skipped',
-          'error_text' => 'blocked_substring: ' . implode(', ', (array)($blacklistMatch['matched_rules'] ?? [])),
-          'response_raw' => json_encode([
-            'reason' => 'blocked_substring',
-            'matched_rules' => (array)($blacklistMatch['matched_rules'] ?? []),
-            'post_urls' => (array)($blacklistMatch['post_urls'] ?? []),
-          ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+          'send_status' => $ok ? 'sent' : 'failed',
+          'error_text' => trim((string)($send['error'] ?? '')),
+          'response_raw' => $send['raw'] ?? '',
         ]);
-
-        continue;
       }
 
-      $send = channel_bridge_send_by_route($settings, $route, $dispatchText, [
-        'source_platform' => $sourcePlatform,
-        'source_chat_id' => $sourceChatId,
-        'source_message_id' => $sourceMessageId,
-        'tg_media_group_id' => trim((string)($payload['tg_media_group_id'] ?? '')),
-        'tg_media_group_message_ids' => (array)($payload['tg_media_group_message_ids'] ?? []),
-        'tg_photo_file_ids' => (array)($payload['tg_photo_file_ids'] ?? []),
-        'tg_photo_file_id' => trim((string)($payload['tg_photo_file_id'] ?? '')),
-        'tg_text_link_urls' => (array)($payload['tg_text_link_urls'] ?? []),
-        'max_text_html' => $dispatchMaxHtml,
-        'tg_public_post_url' => (string)($payload['tg_public_post_url'] ?? ''),
-        'tg_chat_username' => (string)($payload['tg_chat_username'] ?? ''),
-      ]);
-      $ok = (($send['ok'] ?? false) === true);
-      if ($ok) $sent++; else $failed++;
+      if ($isAggregatedMediaGroup && $mediaGroupDispatchToken !== '') {
+        $markSent = ($failed === 0);
+        channel_bridge_media_group_finish_dispatch($payload, $mediaGroupDispatchToken, $markSent);
+      }
 
-      channel_bridge_log_dispatch($pdo, [
-        'route_id' => $routeId,
-        'source_platform' => $sourcePlatform,
-        'source_chat_id' => $sourceChatId,
-        'source_message_id' => $sourceMessageId,
-        'target_platform' => $targetPlatform,
-        'target_chat_id' => $targetChatId,
-        'message_text' => $dispatchText,
-        'send_status' => $ok ? 'sent' : 'failed',
-        'error_text' => trim((string)($send['error'] ?? '')),
-        'response_raw' => $send['raw'] ?? '',
-      ]);
+      return [
+        'ok' => true,
+        'reason' => 'dispatched',
+        'targets' => $targets,
+        'sent' => $sent,
+        'failed' => $failed,
+        'skipped' => $skipped,
+        'inbox_id' => $inboxId,
+      ];
+    } catch (Throwable $e) {
+      if ($isAggregatedMediaGroup && $mediaGroupDispatchToken !== '') {
+        channel_bridge_media_group_finish_dispatch($payload, $mediaGroupDispatchToken, false);
+      }
+
+      throw $e;
     }
-
-    return [
-      'ok' => true,
-      'reason' => 'dispatched',
-      'targets' => $targets,
-      'sent' => $sent,
-      'failed' => $failed,
-      'skipped' => $skipped,
-      'inbox_id' => $inboxId,
-    ];
   }
 
   /**
@@ -4060,3 +4817,5 @@ if (!function_exists('channel_bridge_now')) {
     ];
   }
 }
+
+

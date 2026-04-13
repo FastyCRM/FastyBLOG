@@ -157,6 +157,14 @@ if ($schemaError !== '') {
       <?php if ($webhookHintText !== ''): ?>
         <div class="muted"><?= h($webhookHintText) ?></div>
       <?php endif; ?>
+      <?php if ($canManage): ?>
+        <form method="post" action="<?= h(url('/adm/index.php?m=channel_bridge&do=webhook_refresh')) ?>" style="margin-top:12px; display:grid; gap:8px;">
+          <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+          <input type="hidden" name="return_url" value="<?= h(url('/adm/index.php?m=channel_bridge')) ?>">
+          <button class="btn" type="submit"><?= h(channel_bridge_t('channel_bridge.btn_webhook_refresh')) ?></button>
+          <div class="muted"><?= h(channel_bridge_t('channel_bridge.webhook_refresh_hint')) ?></div>
+        </form>
+      <?php endif; ?>
       <div class="muted"><?= h(channel_bridge_t('channel_bridge.api_hint_secret')) ?></div>
       <div class="muted"><?= h($webhookEndpointPath) ?></div>
     </div>

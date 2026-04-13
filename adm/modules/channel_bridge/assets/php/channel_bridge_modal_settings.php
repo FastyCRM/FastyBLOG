@@ -50,6 +50,7 @@ ob_start();
   <div class="card__body" style="display:grid; gap:14px;">
     <form method="post" action="<?= h(url('/adm/index.php?m=channel_bridge&do=settings_update')) ?>" class="form" style="display:grid; gap:14px;">
       <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+      <input type="hidden" name="return_url" value="<?= h(url('/adm/index.php?m=channel_bridge')) ?>">
 
       <label class="field" style="display:flex; gap:8px; align-items:center;">
         <input type="checkbox" name="enabled" value="1" <?= ((int)($settings['enabled'] ?? 0) === 1) ? 'checked' : '' ?>>
@@ -100,6 +101,16 @@ ob_start();
             <span><?= h(channel_bridge_t('channel_bridge.field_apply_webhook')) ?></span>
           </label>
           <div class="muted" style="margin-top:-4px;"><?= h(channel_bridge_t('channel_bridge.field_apply_webhook_hint')) ?></div>
+
+          <div style="display:grid; gap:8px; margin-top:4px;">
+            <button class="btn"
+                    type="submit"
+                    formaction="<?= h(url('/adm/index.php?m=channel_bridge&do=webhook_refresh')) ?>"
+                    formmethod="post">
+              <?= h(channel_bridge_t('channel_bridge.btn_webhook_refresh')) ?>
+            </button>
+            <div class="muted"><?= h(channel_bridge_t('channel_bridge.webhook_refresh_hint')) ?></div>
+          </div>
 
           <div style="display:grid; gap:8px; margin-top:4px;">
             <button class="btn"

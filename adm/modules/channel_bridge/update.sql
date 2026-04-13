@@ -1,5 +1,5 @@
 -- FILE: /adm/modules/channel_bridge/update.sql
--- ROLE: Дозарез схемы модуля channel_bridge для защиты Telegram webhook.
+-- ROLE: Incremental schema for direct Telegram webhook mode.
 
 CREATE TABLE IF NOT EXISTS `channel_bridge_webhook_updates` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

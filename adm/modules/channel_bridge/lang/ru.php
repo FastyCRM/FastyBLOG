@@ -59,7 +59,9 @@ return [
   'channel_bridge.field_tg_parse_mode' => 'TG parse mode',
   'channel_bridge.field_apply_webhook' => 'После сохранения применить webhook в Telegram',
   'channel_bridge.field_apply_webhook_hint' => 'Webhook будет установлен на URL текущего домена.',
+  'channel_bridge.webhook_refresh_hint' => 'Можно обновить webhook отдельно, не пересохраняя остальные настройки.',
   'channel_bridge.btn_tg_probe' => 'Проверить TG и загрузить чаты',
+  'channel_bridge.btn_webhook_refresh' => 'Обновить webhook',
   'channel_bridge.tg_probe_hint' => 'Проверяет токен бота (/getMe) и подтягивает имена известных чатов через /getChat.',
   'channel_bridge.tg_probe_idle' => 'Нажмите кнопку, чтобы загрузить список известных TG чатов.',
 
@@ -143,6 +145,8 @@ return [
   'channel_bridge.flash_settings_saved_webhook_applied' => 'Настройки сохранены, webhook обновлён',
   'channel_bridge.flash_settings_saved_webhook_failed' => 'Настройки сохранены, но webhook не обновлён: {error}',
   'channel_bridge.flash_settings_saved_webhook_skipped' => 'Настройки сохранены (webhook не применён: проверьте TG bot token и флаг TG)',
+  'channel_bridge.flash_webhook_refreshed' => 'Webhook обновлён',
+  'channel_bridge.flash_webhook_refresh_failed' => 'Не удалось обновить webhook: {error}',
   'channel_bridge.flash_settings_save_error' => 'Ошибка сохранения настроек: {error}',
   'channel_bridge.flash_route_added' => 'Маршрут добавлен',
   'channel_bridge.flash_route_add_error' => 'Ошибка добавления маршрута: {error}',

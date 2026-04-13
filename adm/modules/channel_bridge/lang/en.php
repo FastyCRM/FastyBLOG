@@ -59,7 +59,9 @@ return [
   'channel_bridge.field_tg_parse_mode' => 'TG parse mode',
   'channel_bridge.field_apply_webhook' => 'Apply webhook in Telegram after saving',
   'channel_bridge.field_apply_webhook_hint' => 'Webhook is set to the current domain URL.',
+  'channel_bridge.webhook_refresh_hint' => 'You can refresh webhook separately without re-saving other settings.',
   'channel_bridge.btn_tg_probe' => 'Check TG and load chats',
+  'channel_bridge.btn_webhook_refresh' => 'Refresh webhook',
   'channel_bridge.tg_probe_hint' => 'Checks bot token (/getMe) and resolves known chat names via /getChat.',
   'channel_bridge.tg_probe_idle' => 'Click the button to load known TG chats.',
 
@@ -143,6 +145,8 @@ return [
   'channel_bridge.flash_settings_saved_webhook_applied' => 'Settings saved, webhook updated',
   'channel_bridge.flash_settings_saved_webhook_failed' => 'Settings saved, but webhook was not updated: {error}',
   'channel_bridge.flash_settings_saved_webhook_skipped' => 'Settings saved (webhook skipped: check TG bot token and TG flag)',
+  'channel_bridge.flash_webhook_refreshed' => 'Webhook updated',
+  'channel_bridge.flash_webhook_refresh_failed' => 'Failed to update webhook: {error}',
   'channel_bridge.flash_settings_save_error' => 'Failed to save settings: {error}',
   'channel_bridge.flash_route_added' => 'Route added',
   'channel_bridge.flash_route_add_error' => 'Failed to add route: {error}',
