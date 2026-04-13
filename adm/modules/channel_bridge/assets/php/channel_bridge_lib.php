@@ -1313,6 +1313,10 @@ if (!function_exists('channel_bridge_now')) {
     $waitMs = max(CHANNEL_BRIDGE_MEDIA_GROUP_WAIT_STEP_MS, min(CHANNEL_BRIDGE_MEDIA_GROUP_WAIT_MAX_MS, $waitMs));
     $stepMs = CHANNEL_BRIDGE_MEDIA_GROUP_WAIT_STEP_MS;
     $idleMs = max($stepMs, min(CHANNEL_BRIDGE_MEDIA_GROUP_WAIT_MAX_MS, $idleMs));
+    $minItems = (int)CHANNEL_BRIDGE_MEDIA_GROUP_MIN_ITEMS;
+    if ($minItems < 8) {
+      $minItems = 8;
+    }
     $path = channel_bridge_media_group_buffer_path($sourceChatId, $mediaGroupId);
     $startedAt = microtime(true);
 
@@ -1379,7 +1383,7 @@ if (!function_exists('channel_bridge_now')) {
         ];
       }
 
-      $hasMinimumItems = ($itemCount >= CHANNEL_BRIDGE_MEDIA_GROUP_MIN_ITEMS);
+      $hasMinimumItems = ($itemCount >= $minItems);
       if (!$windowMature) {
         if ($deadlineReached) {
           channel_bridge_media_group_write_and_unlock($fpCheck, $stateCheck);
@@ -1387,10 +1391,11 @@ if (!function_exists('channel_bridge_now')) {
             'mode' => 'pending',
             'media_group_id' => $mediaGroupId,
             'reason' => 'await_window',
-            'message_count' => $itemCount,
-            'age_ms' => $ageMs,
-            'idle_ms' => $idleAgeMs,
-          ];
+          'message_count' => $itemCount,
+          'min_items' => $minItems,
+          'age_ms' => $ageMs,
+          'idle_ms' => $idleAgeMs,
+        ];
         }
 
         channel_bridge_media_group_unlock($fpCheck);
@@ -1424,6 +1429,7 @@ if (!function_exists('channel_bridge_now')) {
         'dispatch_token' => $dispatchToken,
         'message_count' => $messageCount,
         'photo_count' => $photoCount,
+        'min_items' => $minItems,
         'age_ms' => $ageMs,
         'idle_ms' => $idleAgeMs,
       ];
@@ -4506,6 +4512,9 @@ if (!function_exists('channel_bridge_now')) {
           'source_message_id' => (string)($payload['source_message_id'] ?? ''),
           'photos' => count($mgPhotoIds),
           'messages' => count($mgMsgIds),
+          'min_items' => (int)($mg['min_items'] ?? 0),
+          'age_ms' => (int)($mg['age_ms'] ?? 0),
+          'idle_ms' => (int)($mg['idle_ms'] ?? 0),
           'reason' => (string)($mg['reason'] ?? ''),
           'error' => (string)($mg['error'] ?? ''),
         ]);
