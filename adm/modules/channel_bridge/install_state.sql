@@ -67,3 +67,22 @@ CREATE TABLE IF NOT EXISTS `channel_bridge_tg_albums` (
   KEY `idx_dispatch_status` (`dispatch_status`),
   KEY `idx_last_seen_at` (`last_seen_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS `channel_bridge_jobs` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `job_type` VARCHAR(32) NOT NULL DEFAULT '',
+  `job_key` VARCHAR(255) NOT NULL DEFAULT '',
+  `status` VARCHAR(16) NOT NULL DEFAULT 'new',
+  `payload_json` MEDIUMTEXT NOT NULL,
+  `attempts` INT UNSIGNED NOT NULL DEFAULT 0,
+  `available_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `locked_at` DATETIME NULL DEFAULT NULL,
+  `locked_by` VARCHAR(64) NOT NULL DEFAULT '',
+  `last_error` VARCHAR(255) NOT NULL DEFAULT '',
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_job_key` (`job_key`),
+  KEY `idx_status_available` (`status`, `available_at`),
+  KEY `idx_locked_at` (`locked_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

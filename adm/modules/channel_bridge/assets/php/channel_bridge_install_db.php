@@ -211,10 +211,32 @@ try {
     );
   }
 
+  /**
+   * Also apply incremental update.sql statements.
+   * This keeps existing installations in sync (ALTER/CREATE IF NOT EXISTS).
+   */
+  $updateStatementsExecuted = 0;
+  $updateSqlPath = ROOT_PATH . '/adm/modules/' . CHANNEL_BRIDGE_MODULE_CODE . '/update.sql';
+  if (is_file($updateSqlPath)) {
+    $updateSql = (string)file_get_contents($updateSqlPath);
+    if (trim($updateSql) !== '') {
+      $parts = channel_bridge_install_db_split_sql($updateSql);
+      foreach ($parts as $part) {
+        $stmt = trim((string)$part);
+        if ($stmt === '') {
+          continue;
+        }
+        $pdo->exec($stmt);
+        $updateStatementsExecuted++;
+      }
+    }
+  }
+
   audit_log(CHANNEL_BRIDGE_MODULE_CODE, 'install_db', 'info', [
     'status' => 'ok',
     'created' => $created,
     'existing' => array_values(array_diff($tables, $created)),
+    'update_statements_executed' => $updateStatementsExecuted,
   ], CHANNEL_BRIDGE_MODULE_CODE, null, $uid, $role);
 
   flash(channel_bridge_t('channel_bridge.flash_install_done', [

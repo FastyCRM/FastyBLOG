@@ -1605,10 +1605,27 @@ if (!function_exists('channel_bridge_now')) {
       $path .= '?' . $query;
     }
 
+    $connectHost = $host;
+    $requestHost = trim((string)($_SERVER['HTTP_HOST'] ?? ''));
+    if ($requestHost !== '') {
+      $requestHostNoPort = strtolower(preg_replace('~:\d+$~', '', $requestHost));
+      $targetHostNoPort = strtolower(preg_replace('~:\d+$~', '', $host));
+      if ($requestHostNoPort !== '' && $requestHostNoPort === $targetHostNoPort) {
+        /**
+         * For plain HTTP self-calls we can safely bypass DNS via 127.0.0.1.
+         * For HTTPS on shared hosting this often breaks (TLS/SNI/proxy routing),
+         * so keep original hostname for SSL sockets.
+         */
+        if ($scheme !== 'https') {
+          $connectHost = '127.0.0.1';
+        }
+      }
+    }
+
     $transport = ($scheme === 'https') ? 'ssl://' : '';
     $errno = 0;
     $errstr = '';
-    $fp = @fsockopen($transport . $host, $port, $errno, $errstr, max(0.1, $timeoutSeconds));
+    $fp = @fsockopen($transport . $connectHost, $port, $errno, $errstr, max(0.05, $timeoutSeconds));
     if (!is_resource($fp)) {
       return [
         'ok' => false,
@@ -4807,7 +4824,7 @@ if (!function_exists('channel_bridge_now')) {
 
   /**
    * channel_bridge_tg_state_process_webhook()
-   * Persists Telegram webhook state to DB and dispatches from persisted state.
+   * Persists Telegram webhook state to DB and returns normalized state meta.
    *
    * @param PDO $pdo
    * @param array<string,mixed> $settings
@@ -4821,7 +4838,6 @@ if (!function_exists('channel_bridge_now')) {
       return ['ok' => false, 'reason' => 'state_tables_missing'];
     }
 
-    $payload = channel_bridge_tg_preload_photos($settings, $payload);
     $saved = channel_bridge_tg_state_upsert_post($pdo, $payload, $updateMeta);
     if (($saved['ok'] ?? false) !== true) {
       return [
@@ -4835,38 +4851,15 @@ if (!function_exists('channel_bridge_now')) {
     $sourceMessageId = (string)($saved['source_message_id'] ?? '');
     $mediaGroupId = (string)($saved['media_group_id'] ?? '');
 
-    if ($mediaGroupId === '') {
-      $dispatchPayload = channel_bridge_tg_state_single_payload_from_db($pdo, $sourceChatId, $sourceMessageId);
-      if (!$dispatchPayload) {
-        return [
-          'ok' => false,
-          'reason' => 'state_payload_missing',
-          'message' => 'Persisted Telegram post not found',
-        ];
-      }
-
-      return channel_bridge_ingest($pdo, $dispatchPayload);
-    }
-
-    $spawn = channel_bridge_tg_state_spawn_finalize($sourceChatId, $mediaGroupId);
-    if (function_exists('audit_log')) {
-      audit_log(CHANNEL_BRIDGE_MODULE_CODE, 'media_group_finalize_spawn', (($spawn['ok'] ?? false) === true) ? 'info' : 'warn', [
-        'media_group_id' => $mediaGroupId,
-        'source_chat_id' => $sourceChatId,
-        'source_message_id' => $sourceMessageId,
-        'ok' => (($spawn['ok'] ?? false) === true) ? 1 : 0,
-        'error' => trim((string)($spawn['error'] ?? '')),
-      ]);
-    }
-
     return [
       'ok' => true,
-      'reason' => 'media_group_pending',
+      'reason' => ($mediaGroupId === '') ? 'state_saved_single' : 'state_saved_album_item',
       'targets' => 0,
       'sent' => 0,
       'failed' => 0,
+      'source_chat_id' => $sourceChatId,
+      'source_message_id' => $sourceMessageId,
       'media_group_id' => $mediaGroupId,
-      'state_reason' => 'finalize_scheduled',
     ];
   }
 
@@ -6076,5 +6069,3 @@ if (!function_exists('channel_bridge_now')) {
     ];
   }
 }
-
-

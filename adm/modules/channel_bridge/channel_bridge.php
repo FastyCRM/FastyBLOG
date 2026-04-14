@@ -14,6 +14,7 @@ if (!defined('ROOT_PATH')) exit;
 
 require_once __DIR__ . '/settings.php';
 require_once __DIR__ . '/assets/php/channel_bridge_lib.php';
+require_once __DIR__ . '/assets/php/channel_bridge_jobs.php';
 
 acl_guard(module_allowed_roles(CHANNEL_BRIDGE_MODULE_CODE));
 
@@ -26,11 +27,23 @@ $canManage = channel_bridge_can_manage($roles);
 $schemaError = '';
 $settings = channel_bridge_settings_defaults();
 $routes = [];
+$jobsDiag = [
+  'available' => false,
+  'new' => 0,
+  'processing' => 0,
+  'done' => 0,
+  'failed' => 0,
+  'stuck' => 0,
+  'oldest_pending_age_sec' => 0,
+  'last_errors' => [],
+  'recent' => [],
+];
 
 try {
   channel_bridge_require_schema($pdo);
   $settings = channel_bridge_settings_get($pdo);
   $routes = channel_bridge_routes_list($pdo);
+  $jobsDiag = channel_bridge_jobs_stats($pdo);
 } catch (Throwable $e) {
   $schemaError = trim($e->getMessage());
 }
@@ -169,6 +182,60 @@ if ($schemaError !== '') {
       <div class="muted"><?= h($webhookEndpointPath) ?></div>
     </div>
   </article>
+</section>
+
+<section class="card">
+  <div class="card__head">
+    <div class="card__title">Queue Diagnostics</div>
+    <div class="card__hint muted">channel_bridge_jobs</div>
+  </div>
+  <div class="card__body cb-status">
+    <?php if (!(bool)($jobsDiag['available'] ?? false)): ?>
+      <div class="muted">Jobs table is not installed</div>
+    <?php else: ?>
+      <div><span class="muted">new:</span> <strong><?= (int)($jobsDiag['new'] ?? 0) ?></strong></div>
+      <div><span class="muted">processing:</span> <strong><?= (int)($jobsDiag['processing'] ?? 0) ?></strong></div>
+      <div><span class="muted">failed:</span> <strong><?= (int)($jobsDiag['failed'] ?? 0) ?></strong></div>
+      <div><span class="muted">stuck:</span> <strong><?= (int)($jobsDiag['stuck'] ?? 0) ?></strong></div>
+      <div><span class="muted">oldest pending age:</span> <strong><?= (int)($jobsDiag['oldest_pending_age_sec'] ?? 0) ?>s</strong></div>
+      <?php if ($canManage): ?>
+        <form method="post"
+              action="<?= h(url('/adm/index.php?m=channel_bridge&do=jobs_reset')) ?>"
+              style="margin-top:8px; display:grid; gap:8px;"
+              onsubmit="return confirm('<?= h(channel_bridge_t('channel_bridge.confirm_jobs_reset')) ?>');">
+          <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+          <button class="btn" type="submit"><?= h(channel_bridge_t('channel_bridge.btn_jobs_reset')) ?></button>
+          <div class="muted"><?= h(channel_bridge_t('channel_bridge.jobs_reset_hint')) ?></div>
+        </form>
+      <?php endif; ?>
+      <?php $lastErrors = is_array($jobsDiag['last_errors'] ?? null) ? (array)$jobsDiag['last_errors'] : []; ?>
+      <?php if ($lastErrors): ?>
+        <div class="muted" style="margin-top:8px;">Last errors:</div>
+        <?php foreach ($lastErrors as $row): ?>
+          <div class="mono" style="font-size:12px;">
+            #<?= (int)($row['id'] ?? 0) ?>
+            <?= h((string)($row['job_type'] ?? '')) ?>
+            (attempts <?= (int)($row['attempts'] ?? 0) ?>):
+            <?= h((string)($row['last_error'] ?? '')) ?>
+          </div>
+        <?php endforeach; ?>
+      <?php endif; ?>
+
+      <?php $recentJobs = is_array($jobsDiag['recent'] ?? null) ? (array)$jobsDiag['recent'] : []; ?>
+      <?php if ($recentJobs): ?>
+        <div class="muted" style="margin-top:8px;">Recent jobs:</div>
+        <?php foreach ($recentJobs as $row): ?>
+          <div class="mono" style="font-size:12px;">
+            #<?= (int)($row['id'] ?? 0) ?>
+            <?= h((string)($row['job_type'] ?? '')) ?>
+            <?= h((string)($row['status'] ?? '')) ?>
+            a<?= (int)($row['attempts'] ?? 0) ?>
+            <?= h((string)($row['job_key'] ?? '')) ?>
+          </div>
+        <?php endforeach; ?>
+      <?php endif; ?>
+    <?php endif; ?>
+  </div>
 </section>
 
 <section class="card">
