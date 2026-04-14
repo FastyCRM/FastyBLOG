@@ -19,6 +19,9 @@ const CHANNEL_BRIDGE_TABLE_DISPATCH_LOG = 'channel_bridge_dispatch_log';
 const CHANNEL_BRIDGE_TABLE_BIND_TOKENS = 'channel_bridge_bind_tokens';
 const CHANNEL_BRIDGE_TABLE_LINK_SUFFIX_RULES = 'channel_bridge_link_suffix_rules';
 const CHANNEL_BRIDGE_TABLE_WEBHOOK_UPDATES = 'channel_bridge_webhook_updates';
+const CHANNEL_BRIDGE_TABLE_TG_POSTS = 'channel_bridge_tg_posts';
+const CHANNEL_BRIDGE_TABLE_TG_POST_PHOTOS = 'channel_bridge_tg_post_photos';
+const CHANNEL_BRIDGE_TABLE_TG_ALBUMS = 'channel_bridge_tg_albums';
 
 const CHANNEL_BRIDGE_MEDIA_GROUP_WAIT_MAX_MS = 15000;
 const CHANNEL_BRIDGE_MEDIA_GROUP_WAIT_STEP_MS = 100;
@@ -46,6 +49,9 @@ const CHANNEL_BRIDGE_TABLES = [
   CHANNEL_BRIDGE_TABLE_BIND_TOKENS,
   CHANNEL_BRIDGE_TABLE_LINK_SUFFIX_RULES,
   CHANNEL_BRIDGE_TABLE_WEBHOOK_UPDATES,
+  CHANNEL_BRIDGE_TABLE_TG_POSTS,
+  CHANNEL_BRIDGE_TABLE_TG_POST_PHOTOS,
+  CHANNEL_BRIDGE_TABLE_TG_ALBUMS,
 ];
 
 const CHANNEL_BRIDGE_ALLOWED_DO = [
@@ -65,6 +71,7 @@ const CHANNEL_BRIDGE_ALLOWED_DO = [
   'max_probe',
   'api_ingest',
   'api_tg_webhook',
+  'api_tg_finalize',
 ];
 
 const CHANNEL_BRIDGE_SOURCE_TG = 'tg';

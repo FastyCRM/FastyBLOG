@@ -131,7 +131,11 @@ try {
   $payload['tg_update_id'] = (int)($updateMeta['update_id'] ?? 0);
   $messageType = (trim((string)($payload['tg_media_group_id'] ?? '')) === '') ? 'single' : 'media_group';
 
-  $result = channel_bridge_ingest($pdo, $payload);
+  if (channel_bridge_tg_state_tables_available($pdo)) {
+    $result = channel_bridge_tg_state_process_webhook($pdo, $settings, $payload, $updateMeta);
+  } else {
+    $result = channel_bridge_ingest($pdo, $payload);
+  }
   $ok = (($result['ok'] ?? false) === true);
   $reason = trim((string)($result['reason'] ?? ''));
   $handled = !in_array($reason, ['duplicate', 'media_group_already_sent'], true);

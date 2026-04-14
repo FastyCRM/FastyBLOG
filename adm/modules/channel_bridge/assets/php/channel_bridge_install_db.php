@@ -183,6 +183,14 @@ try {
     throw new RuntimeException(channel_bridge_t('channel_bridge.error_install_sql_empty'));
   }
 
+  $installStateSqlPath = ROOT_PATH . '/adm/modules/' . CHANNEL_BRIDGE_MODULE_CODE . '/install_state.sql';
+  if (is_file($installStateSqlPath)) {
+    $installStateSql = (string)file_get_contents($installStateSqlPath);
+    if (trim($installStateSql) !== '') {
+      $installSql .= "\n\n" . $installStateSql;
+    }
+  }
+
   $createMap = channel_bridge_install_db_collect_create_map($installSql);
   $created = [];
   $missingStatements = [];
@@ -222,4 +230,3 @@ try {
 }
 
 redirect_return('/adm/index.php?m=' . CHANNEL_BRIDGE_MODULE_CODE);
-
