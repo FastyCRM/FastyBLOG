@@ -529,6 +529,7 @@ if (!function_exists('ymlb_module_code')) {
     $channelSites = ymlb_qi(ymlb_table('channel_sites'));
     $updates = ymlb_qi(ymlb_table('updates'));
     $photos = ymlb_qi(ymlb_table('photos'));
+    $pendingPhotos = ymlb_qi(ymlb_table('pending_photos'));
 
     $pdo->exec("
       CREATE TABLE IF NOT EXISTS {$settings} (
@@ -759,6 +760,21 @@ if (!function_exists('ymlb_module_code')) {
         PRIMARY KEY (id),
         KEY idx_photo_date (photo_date),
         KEY idx_binding (binding_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ");
+
+    $pdo->exec("
+      CREATE TABLE IF NOT EXISTS {$pendingPhotos} (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        platform VARCHAR(16) NOT NULL DEFAULT 'tg',
+        chat_kind VARCHAR(16) NOT NULL DEFAULT 'chat',
+        chat_id VARCHAR(64) NOT NULL DEFAULT '',
+        source_url TEXT NOT NULL,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL,
+        PRIMARY KEY (id),
+        UNIQUE KEY uq_platform_kind_chat (platform, chat_kind, chat_id),
+        KEY idx_updated (updated_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
 
@@ -3780,6 +3796,209 @@ if (!function_exists('ymlb_module_code')) {
   }
 
   /**
+   * ymlb_pending_photo_upsert()
+   */
+  function ymlb_pending_photo_upsert(PDO $pdo, string $platform, string $chatKind, string $chatId, string $sourceUrl): void
+  {
+    $platform = ymlb_platform_norm($platform);
+    $chatKind = strtolower(trim($chatKind));
+    if ($chatKind !== 'channel') $chatKind = 'chat';
+    $chatId = trim($chatId);
+    $sourceUrl = trim($sourceUrl);
+    if ($chatId === '' || $sourceUrl === '') return;
+
+    $table = ymlb_qi(ymlb_table('pending_photos'));
+    $now = ymlb_now();
+    $st = $pdo->prepare("
+      INSERT INTO {$table}
+      (platform, chat_kind, chat_id, source_url, created_at, updated_at)
+      VALUES
+      (:platform, :chat_kind, :chat_id, :source_url, :created_at, :updated_at)
+      ON DUPLICATE KEY UPDATE
+        source_url = VALUES(source_url),
+        updated_at = VALUES(updated_at)
+    ");
+    $st->execute([
+      ':platform' => $platform,
+      ':chat_kind' => $chatKind,
+      ':chat_id' => $chatId,
+      ':source_url' => $sourceUrl,
+      ':created_at' => $now,
+      ':updated_at' => $now,
+    ]);
+  }
+
+  /**
+   * ymlb_pending_photo_get()
+   *
+   * @return array<string,mixed>|null
+   */
+  function ymlb_pending_photo_get(PDO $pdo, string $platform, string $chatKind, string $chatId): ?array
+  {
+    $platform = ymlb_platform_norm($platform);
+    $chatKind = strtolower(trim($chatKind));
+    if ($chatKind !== 'channel') $chatKind = 'chat';
+    $chatId = trim($chatId);
+    if ($chatId === '') return null;
+
+    $table = ymlb_qi(ymlb_table('pending_photos'));
+    $st = $pdo->prepare("
+      SELECT *
+      FROM {$table}
+      WHERE platform = :platform
+        AND chat_kind = :chat_kind
+        AND chat_id = :chat_id
+      LIMIT 1
+    ");
+    $st->execute([
+      ':platform' => $platform,
+      ':chat_kind' => $chatKind,
+      ':chat_id' => $chatId,
+    ]);
+    $row = $st->fetch(PDO::FETCH_ASSOC);
+    return is_array($row) ? $row : null;
+  }
+
+  /**
+   * ymlb_pending_photo_delete()
+   */
+  function ymlb_pending_photo_delete(PDO $pdo, string $platform, string $chatKind, string $chatId): void
+  {
+    $platform = ymlb_platform_norm($platform);
+    $chatKind = strtolower(trim($chatKind));
+    if ($chatKind !== 'channel') $chatKind = 'chat';
+    $chatId = trim($chatId);
+    if ($chatId === '') return;
+
+    $table = ymlb_qi(ymlb_table('pending_photos'));
+    $st = $pdo->prepare("
+      DELETE FROM {$table}
+      WHERE platform = :platform
+        AND chat_kind = :chat_kind
+        AND chat_id = :chat_id
+    ");
+    $st->execute([
+      ':platform' => $platform,
+      ':chat_kind' => $chatKind,
+      ':chat_id' => $chatId,
+    ]);
+  }
+
+  /**
+   * ymlb_tg_message_best_photo_file_id()
+   */
+  function ymlb_tg_message_best_photo_file_id(array $message): string
+  {
+    $photos = $message['photo'] ?? null;
+    if (!is_array($photos) || !$photos) return '';
+    $last = end($photos);
+    if (!is_array($last)) return '';
+    return trim((string)($last['file_id'] ?? ''));
+  }
+
+  /**
+   * ymlb_tg_build_file_download_url()
+   *
+   * @return array<string,mixed>
+   */
+  function ymlb_tg_build_file_download_url(string $tgToken, string $fileId): array
+  {
+    $tgToken = trim($tgToken);
+    $fileId = trim($fileId);
+    if ($tgToken === '' || $fileId === '') {
+      return ['ok' => false, 'error' => 'TG_FILE_PARAMS_EMPTY'];
+    }
+
+    if (!function_exists('tg_request')) {
+      return ['ok' => false, 'error' => 'TG_REQUEST_UNAVAILABLE'];
+    }
+
+    $res = tg_request($tgToken, 'getFile', ['file_id' => $fileId]);
+    if (($res['ok'] ?? false) !== true) {
+      return ['ok' => false, 'error' => (string)($res['error'] ?? 'TG_GETFILE_ERROR'), 'raw' => $res];
+    }
+
+    $result = (array)($res['result'] ?? []);
+    $filePath = trim((string)($result['file_path'] ?? ''));
+    if ($filePath === '') {
+      return ['ok' => false, 'error' => 'TG_FILE_PATH_EMPTY', 'raw' => $res];
+    }
+
+    return [
+      'ok' => true,
+      'url' => 'https://api.telegram.org/file/bot' . $tgToken . '/' . ltrim($filePath, '/'),
+      'file_path' => $filePath,
+    ];
+  }
+
+  /**
+   * ymlb_array_find_first_url_by_keys()
+   * @param mixed $value
+   * @param array<int,string> $keys
+   */
+  function ymlb_array_find_first_url_by_keys($value, array $keys): ?string
+  {
+    if (!is_array($value)) return null;
+
+    foreach ($keys as $key) {
+      if (!array_key_exists($key, $value)) continue;
+      $raw = $value[$key];
+      if (is_string($raw)) {
+        $url = trim($raw);
+        if ($url !== '' && preg_match('~^https?://~i', $url)) {
+          return $url;
+        }
+      }
+    }
+
+    foreach ($value as $item) {
+      if (!is_array($item)) continue;
+      $hit = ymlb_array_find_first_url_by_keys($item, $keys);
+      if ($hit !== null) return $hit;
+    }
+
+    return null;
+  }
+
+  /**
+   * ymlb_max_message_photo_url()
+   */
+  function ymlb_max_message_photo_url(array $message): string
+  {
+    $body = (array)($message['body'] ?? []);
+    $attachments = $body['attachments'] ?? $message['attachments'] ?? [];
+    if (!is_array($attachments)) $attachments = [];
+
+    $urlKeys = [
+      'url',
+      'imageUrl',
+      'image_url',
+      'photoUrl',
+      'photo_url',
+      'previewUrl',
+      'preview_url',
+      'downloadUrl',
+      'download_url',
+      'src',
+    ];
+
+    foreach ($attachments as $attachment) {
+      if (!is_array($attachment)) continue;
+      $type = strtolower(trim((string)($attachment['type'] ?? $attachment['kind'] ?? $attachment['media_type'] ?? '')));
+      if ($type !== '' && !in_array($type, ['image', 'photo', 'picture', 'media'], true)) {
+        continue;
+      }
+      $hit = ymlb_array_find_first_url_by_keys($attachment, $urlKeys);
+      if ($hit !== null) return $hit;
+    }
+
+    $hit = ymlb_array_find_first_url_by_keys($body, $urlKeys);
+    if ($hit !== null) return $hit;
+    $hit = ymlb_array_find_first_url_by_keys($message, $urlKeys);
+    return $hit !== null ? $hit : '';
+  }
+
+  /**
    * ymlb_ord_result()
    *
    * @param array<string,mixed> $extra
@@ -5112,6 +5331,73 @@ if (!function_exists('ymlb_module_code')) {
       'text' => (string)($meta['message_text'] ?? ''),
     ];
 
+    $chatId = trim((string)($meta['chat_id'] ?? ''));
+    $platform = 'max';
+    $chatKind = 'chat';
+    $startUrl = market_url_extract_first((string)($meta['message_text'] ?? ''));
+    if ($chatId !== '' && $startUrl !== null && ymlb_is_market_url($startUrl)) {
+      ymlb_pending_photo_upsert($pdo, $platform, $chatKind, $chatId, $startUrl);
+      ymlb_stage_log('pipeline_channel', 'info', [
+        'stage' => 'await_photo',
+        'platform' => $platform,
+        'chat_id' => $chatId,
+        'source_url' => $startUrl,
+      ]);
+      ymlb_target_send_text($settings, $platform, $chatId, 'Пришлите фото товара.');
+      return [
+        'ok' => true,
+        'http' => 200,
+        'handled' => true,
+        'reason' => 'awaiting_photo',
+        'meta' => $meta,
+        'result' => ['handled' => true, 'reason' => 'awaiting_photo'],
+      ];
+    }
+
+    $photoUrl = ymlb_max_message_photo_url((array)($meta['message'] ?? []));
+    if ($chatId !== '' && $photoUrl !== '') {
+      $pending = ymlb_pending_photo_get($pdo, $platform, $chatKind, $chatId);
+      if (!$pending) {
+        ymlb_target_send_text($settings, $platform, $chatId, 'Сначала отправьте ссылку на товар.');
+        return [
+          'ok' => true,
+          'http' => 200,
+          'handled' => true,
+          'reason' => 'photo_without_link',
+          'meta' => $meta,
+          'result' => ['handled' => true, 'reason' => 'photo_without_link'],
+        ];
+      }
+
+      $message['text'] = trim((string)($pending['source_url'] ?? ''));
+      $message['caption'] = (string)$message['text'];
+      $message['ymlb_user_photo_url'] = $photoUrl;
+      $result = ymlb_process_channel_post($pdo, $settings, $message, 'chat', 'max');
+      if (!empty($result['handled'])) {
+        ymlb_pending_photo_delete($pdo, $platform, $chatKind, $chatId);
+      }
+      return [
+        'ok' => true,
+        'http' => 200,
+        'handled' => !empty($result['handled']),
+        'reason' => (string)($result['reason'] ?? ''),
+        'meta' => $meta,
+        'result' => $result,
+      ];
+    }
+
+    if ($chatId !== '' && ymlb_pending_photo_get($pdo, $platform, $chatKind, $chatId)) {
+      ymlb_target_send_text($settings, $platform, $chatId, 'Ожидаю фото товара.');
+      return [
+        'ok' => true,
+        'http' => 200,
+        'handled' => true,
+        'reason' => 'awaiting_photo',
+        'meta' => $meta,
+        'result' => ['handled' => true, 'reason' => 'awaiting_photo'],
+      ];
+    }
+
     $result = ymlb_process_channel_post($pdo, $settings, $message, 'chat', 'max');
     return [
       'ok' => true,
@@ -5191,6 +5477,68 @@ if (!function_exists('ymlb_module_code')) {
     $chatType = strtolower(trim((string)($chat['type'] ?? '')));
     if ($chatType !== 'group' && $chatType !== 'supergroup') {
       return ['handled' => false, 'reason' => 'chat_type_not_supported'];
+    }
+
+    $chatId = trim((string)($chat['id'] ?? ''));
+    $text = trim((string)($message['text'] ?? ($message['caption'] ?? '')));
+    $token = trim((string)($settings['bot_token'] ?? ''));
+    $platform = 'tg';
+    $chatKind = 'chat';
+
+    $startUrl = market_url_extract_first($text);
+    if ($chatId !== '' && $startUrl !== null && ymlb_is_market_url($startUrl)) {
+      ymlb_pending_photo_upsert($pdo, $platform, $chatKind, $chatId, $startUrl);
+      ymlb_stage_log('pipeline_channel', 'info', [
+        'stage' => 'await_photo',
+        'platform' => $platform,
+        'chat_id' => $chatId,
+        'source_url' => $startUrl,
+      ]);
+      if ($token !== '') {
+        ymlb_target_send_text($settings, $platform, $chatId, 'Пришлите фото товара.');
+      }
+      return ['handled' => true, 'reason' => 'awaiting_photo'];
+    }
+
+    $photoFileId = ymlb_tg_message_best_photo_file_id($message);
+    if ($chatId !== '' && $photoFileId !== '') {
+      $pending = ymlb_pending_photo_get($pdo, $platform, $chatKind, $chatId);
+      if (!$pending) {
+        if ($token !== '') {
+          ymlb_target_send_text($settings, $platform, $chatId, 'Сначала отправьте ссылку на товар.');
+        }
+        return ['handled' => true, 'reason' => 'photo_without_link'];
+      }
+
+      $fileRes = ymlb_tg_build_file_download_url($token, $photoFileId);
+      if (($fileRes['ok'] ?? false) !== true) {
+        ymlb_stage_log('pipeline_channel', 'warn', [
+          'stage' => 'await_photo',
+          'platform' => $platform,
+          'chat_id' => $chatId,
+          'reason' => (string)($fileRes['error'] ?? 'tg_file_download_url_failed'),
+        ]);
+        if ($token !== '') {
+          ymlb_target_send_text($settings, $platform, $chatId, 'Не удалось получить фото. Пришлите фото ещё раз.');
+        }
+        return ['handled' => true, 'reason' => 'photo_download_url_failed'];
+      }
+
+      $message['text'] = trim((string)($pending['source_url'] ?? ''));
+      $message['caption'] = (string)$message['text'];
+      $message['ymlb_user_photo_url'] = trim((string)($fileRes['url'] ?? ''));
+      $result = ymlb_process_channel_post($pdo, $settings, $message, 'chat');
+      if (!empty($result['handled'])) {
+        ymlb_pending_photo_delete($pdo, $platform, $chatKind, $chatId);
+      }
+      return $result;
+    }
+
+    if ($chatId !== '' && ymlb_pending_photo_get($pdo, $platform, $chatKind, $chatId)) {
+      if ($token !== '') {
+        ymlb_target_send_text($settings, $platform, $chatId, 'Ожидаю фото товара.');
+      }
+      return ['handled' => true, 'reason' => 'awaiting_photo'];
     }
 
     return ymlb_process_channel_post($pdo, $settings, $message, 'chat');
@@ -5530,6 +5878,7 @@ if (!function_exists('ymlb_module_code')) {
     if ($productName === '') $productName = 'Товар';
     $productPhoto = trim((string)($product['photo'] ?? ''));
     $productDescription = trim((string)($product['description'] ?? ''));
+    $userPhotoSourceUrl = trim((string)($channelPost['ymlb_user_photo_url'] ?? ''));
 
     ymlb_stage_log('pipeline_channel', 'info', [
       'stage' => 'market_product',
@@ -5576,19 +5925,35 @@ if (!function_exists('ymlb_module_code')) {
       ]);
     }
 
-    $vid = date('dmyHis');
-    $ordEnabled = (defined('YM_LINK_BOT_ORD_ENABLED') ? (bool)YM_LINK_BOT_ORD_ENABLED : true);
-    $descriptionForReply = ymlb_clean_market_description(
-      ymlb_strip_emoji(trim($productDescription))
-    );
-    $titleFromUrlForReply = ymlb_title_from_url($url2);
-    if ($descriptionForReply !== '') {
-      if (function_exists('mb_substr')) {
-        $descriptionForReply = (string)mb_substr($descriptionForReply, 0, 700);
+    $inputPhotoLocal = null;
+    $inputPhotoPublic = null;
+    $inputPhotoDay = null;
+    if ($userPhotoSourceUrl !== '') {
+      [$inputPhotoLocal, $inputPhotoPublic, $inputPhotoDay] = ymlb_save_photo($userPhotoSourceUrl);
+      if ($inputPhotoDay !== null) {
+        ymlb_photo_track($pdo, $bindingId, $userPhotoSourceUrl, $inputPhotoLocal, $inputPhotoPublic, $inputPhotoDay);
+        ymlb_stage_log('pipeline_channel', 'info', [
+          'stage' => 'input_photo_saved',
+          'chat_id' => $chatId,
+          'binding_id' => $bindingId,
+          'photo_date' => $inputPhotoDay,
+          'has_public_url' => ($inputPhotoPublic !== null ? 1 : 0),
+        ]);
       } else {
-        $descriptionForReply = substr($descriptionForReply, 0, 700);
+        ymlb_stage_log('pipeline_channel', 'warn', [
+          'stage' => 'input_photo_saved',
+          'chat_id' => $chatId,
+          'binding_id' => $bindingId,
+          'reason' => 'save_failed',
+          'source_photo_url' => $userPhotoSourceUrl,
+        ]);
       }
     }
+
+    $vid = date('dmyHis');
+    $ordEnabled = (defined('YM_LINK_BOT_ORD_ENABLED') ? (bool)YM_LINK_BOT_ORD_ENABLED : true);
+    $descriptionForReply = 'Товар Яндекс Маркет';
+    $titleFromUrlForReply = ymlb_title_from_url($url2);
     $replyText = ($descriptionForReply !== '' ? $descriptionForReply : $titleFromUrlForReply);
     $ordText = trim($replyText !== '' ? $replyText : $productName);
     if ($ordText === '') $ordText = 'Товар';
@@ -5709,7 +6074,7 @@ if (!function_exists('ymlb_module_code')) {
           $vid,
           $oauth,
           $ordText,
-          (string)($photoPublic ?: $productPhoto)
+          (string)($inputPhotoPublic ?: $photoPublic ?: $productPhoto)
         );
         $ordLast = ymlb_ord_last_result();
       } else {
@@ -5861,7 +6226,7 @@ if (!function_exists('ymlb_module_code')) {
 
     $sendOk = false;
     if ($canSendTransport) {
-      $sendResult = ymlb_target_send_rows($settings, $platform, $chatId, $targetKind, $rows, $photoPublic, $productPhoto);
+      $sendResult = ymlb_target_send_rows($settings, $platform, $chatId, $targetKind, $rows, ($inputPhotoPublic ?: $photoPublic), $productPhoto);
       $sendOk = !empty($sendResult['ok']);
       ymlb_stage_log('pipeline_channel', (!empty($sendResult['ok']) ? 'info' : 'warn'), [
         'stage' => 'send_result',
