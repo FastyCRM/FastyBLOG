@@ -592,79 +592,7 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
    */
   function channel_bridge_jobs_sync_tg_photo_state(PDO $pdo, array $payload): void
   {
-    $sourceChatId = channel_bridge_norm_chat_id((string)($payload['source_chat_id'] ?? ''));
-    $sourceMessageId = trim((string)($payload['source_message_id'] ?? ''));
-    $mediaGroupId = trim((string)($payload['tg_media_group_id'] ?? ''));
-    if ($sourceChatId === '') {
-      return;
-    }
-
-    $photoIds = channel_bridge_tg_source_photo_file_ids($payload);
-    if (!$photoIds) {
-      return;
-    }
-
-    $localMap = channel_bridge_tg_state_photo_local_map($payload);
-    $errorMap = channel_bridge_tg_state_photo_error_map($payload);
-
-    $sql = ($mediaGroupId !== '')
-      ? "
-        UPDATE " . CHANNEL_BRIDGE_TABLE_TG_POST_PHOTOS . "
-        SET
-          local_path = :local_path,
-          download_status = :download_status,
-          download_error = :download_error,
-          updated_at = CURRENT_TIMESTAMP
-        WHERE source_chat_id = :source_chat_id
-          AND media_group_id = :media_group_id
-          AND tg_file_id = :tg_file_id
-      "
-      : "
-        UPDATE " . CHANNEL_BRIDGE_TABLE_TG_POST_PHOTOS . "
-        SET
-          local_path = :local_path,
-          download_status = :download_status,
-          download_error = :download_error,
-          updated_at = CURRENT_TIMESTAMP
-        WHERE source_chat_id = :source_chat_id
-          AND source_message_id = :source_message_id
-          AND tg_file_id = :tg_file_id
-      ";
-    $up = $pdo->prepare($sql);
-
-    foreach ($photoIds as $photoId) {
-      $photoId = trim((string)$photoId);
-      if ($photoId === '') {
-        continue;
-      }
-
-      $localPath = trim((string)($localMap[$photoId] ?? ''));
-      $downloadError = trim((string)($errorMap[$photoId] ?? ''));
-      $downloadStatus = 'pending';
-      if ($localPath !== '') {
-        $downloadStatus = 'downloaded';
-      } elseif ($downloadError !== '') {
-        $downloadStatus = 'failed';
-      }
-
-      $bind = [
-        ':source_chat_id' => $sourceChatId,
-        ':tg_file_id' => $photoId,
-        ':local_path' => $localPath,
-        ':download_status' => $downloadStatus,
-        ':download_error' => $downloadError,
-      ];
-      if ($mediaGroupId !== '') {
-        $bind[':media_group_id'] = $mediaGroupId;
-      } else {
-        $bind[':source_message_id'] = $sourceMessageId;
-      }
-      $up->execute($bind);
-    }
-
-    if ($mediaGroupId !== '') {
-      channel_bridge_tg_state_refresh_album($pdo, $sourceChatId, $mediaGroupId);
-    }
+    channel_bridge_tg_state_sync_photo_state($pdo, $payload);
   }
 
   /**
@@ -734,17 +662,40 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
 
       $itemsCount = (int)($row['items_count'] ?? 0);
       $lastSeenTs = channel_bridge_tg_state_datetime_ts((string)($row['last_seen_at'] ?? ''));
+      $firstSeenTs = channel_bridge_tg_state_datetime_ts((string)($row['first_seen_at'] ?? ''));
+      $photosTotal = (int)($row['photos_total'] ?? 0);
+      $photosDownloaded = (int)($row['photos_downloaded'] ?? 0);
+      $photosFailed = (int)($row['photos_failed'] ?? 0);
       if ($lastSeenTs <= 0) {
         $lastSeenTs = time();
       }
+      if ($firstSeenTs <= 0) {
+        $firstSeenTs = $lastSeenTs;
+      }
       $idleMs = max(0, (int)round((microtime(true) - $lastSeenTs) * 1000));
-      if ($itemsCount <= 0) {
+      $ageMs = max(0, (int)round((microtime(true) - $firstSeenTs) * 1000));
+      if ($itemsCount < (int)CHANNEL_BRIDGE_MEDIA_GROUP_MIN_ITEMS) {
         $pdo->commit();
-        return ['mode' => 'pending', 'reason' => 'await_more_items', 'idle_ms' => $idleMs];
+        return [
+          'mode' => 'pending',
+          'reason' => 'await_more_items',
+          'idle_ms' => $idleMs,
+          'age_ms' => $ageMs,
+          'min_items' => (int)CHANNEL_BRIDGE_MEDIA_GROUP_MIN_ITEMS,
+        ];
+      }
+      if ($ageMs < CHANNEL_BRIDGE_MEDIA_GROUP_MIN_AGE_MS) {
+        $pdo->commit();
+        return [
+          'mode' => 'pending',
+          'reason' => 'await_window',
+          'idle_ms' => $idleMs,
+          'age_ms' => $ageMs,
+        ];
       }
       if ($idleMs < $quietMs) {
         $pdo->commit();
-        return ['mode' => 'pending', 'reason' => 'await_idle', 'idle_ms' => $idleMs];
+        return ['mode' => 'pending', 'reason' => 'await_idle', 'idle_ms' => $idleMs, 'age_ms' => $ageMs];
       }
 
       $dispatchToken = hash('sha256', $sourceChatId . '|' . $mediaGroupId . '|' . microtime(true) . '|' . mt_rand(1, PHP_INT_MAX));
@@ -764,7 +715,15 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
       ]);
       $pdo->commit();
 
-      return ['mode' => 'ready', 'dispatch_token' => $dispatchToken, 'idle_ms' => $idleMs];
+      return [
+        'mode' => 'ready',
+        'dispatch_token' => $dispatchToken,
+        'idle_ms' => $idleMs,
+        'age_ms' => $ageMs,
+        'photos_total' => $photosTotal,
+        'photos_downloaded' => $photosDownloaded,
+        'photos_failed' => $photosFailed,
+      ];
     } catch (Throwable $e) {
       if ($pdo->inTransaction()) {
         $pdo->rollBack();
