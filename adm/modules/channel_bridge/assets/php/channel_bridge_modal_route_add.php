@@ -114,7 +114,8 @@ ob_start();
 
       <label class="field field--stack">
         <span class="field__label"><?= h(channel_bridge_t('channel_bridge.field_target_extra')) ?></span>
-        <textarea class="select" name="target_extra" rows="3" placeholder='{"thread_id":"42"}'></textarea>
+        <textarea class="select" name="target_extra" rows="3" placeholder='{"thread_id":"42","vk_upload_token":"vk1.a..."}'></textarea>
+        <div class="muted"><?= h(channel_bridge_t('channel_bridge.field_target_extra_hint')) ?></div>
       </label>
 
       <label class="field field--stack">

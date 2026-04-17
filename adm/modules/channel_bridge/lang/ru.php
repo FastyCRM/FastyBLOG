@@ -99,6 +99,7 @@ return [
   'channel_bridge.field_target_chat_id' => 'Цель (chat/channel id)',
   'channel_bridge.field_auto_bind_target' => 'Автопривязка цели по коду (только TG-цель)',
   'channel_bridge.field_target_extra' => 'Доп. параметры цели (JSON)',
+  'channel_bridge.field_target_extra_hint' => 'Для VK с фото можно указать {"vk_upload_token":"..."} или {"vk_access_token":"..."} если upload-методы недоступны для group token.',
   'channel_bridge.field_blacklist_domains' => 'Чёрный список подстрок',
   'channel_bridge.field_blacklist_domains_hint' => 'Если любая ссылка поста содержит одну из этих подстрок, маршрут пропускается. По одной подстроке на строку или через запятую.',
   'channel_bridge.field_route_enabled' => 'Маршрут активен',

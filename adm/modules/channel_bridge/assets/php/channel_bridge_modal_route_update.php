@@ -119,6 +119,7 @@ ob_start();
       <label class="field field--stack">
         <span class="field__label"><?= h(channel_bridge_t('channel_bridge.field_target_extra')) ?></span>
         <textarea class="select" name="target_extra" rows="3"><?= h((string)($route['target_extra'] ?? '')) ?></textarea>
+        <div class="muted"><?= h(channel_bridge_t('channel_bridge.field_target_extra_hint')) ?></div>
       </label>
 
       <label class="field field--stack">

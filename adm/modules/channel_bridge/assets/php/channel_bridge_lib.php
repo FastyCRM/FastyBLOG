@@ -4121,9 +4121,27 @@ if (!function_exists('channel_bridge_now')) {
    */
   function channel_bridge_http_post_multipart_file(string $url, string $filePath, array $headers = [], int $timeout = 30): array
   {
+    return channel_bridge_http_post_multipart_file_field($url, $filePath, 'data', [], $headers, $timeout);
+  }
+
+  /**
+   * channel_bridge_http_post_multipart_file_field()
+   * Выполняет multipart/form-data POST с настраиваемым именем поля файла.
+   *
+   * @param string $url
+   * @param string $filePath
+   * @param string $fieldName
+   * @param array<string,mixed> $extraFields
+   * @param array<int,string> $headers
+   * @param int $timeout
+   * @return array<string,mixed>
+   */
+  function channel_bridge_http_post_multipart_file_field(string $url, string $filePath, string $fieldName = 'data', array $extraFields = [], array $headers = [], int $timeout = 30): array
+  {
     $url = trim($url);
     $filePath = trim($filePath);
-    if ($url === '' || $filePath === '') return ['ok' => false, 'error' => 'PARAMS_EMPTY'];
+    $fieldName = trim($fieldName);
+    if ($url === '' || $filePath === '' || $fieldName === '') return ['ok' => false, 'error' => 'PARAMS_EMPTY'];
     if (!is_file($filePath)) return ['ok' => false, 'error' => 'FILE_NOT_FOUND'];
     if (!function_exists('curl_init')) return ['ok' => false, 'error' => 'CURL_REQUIRED'];
     if ($timeout < 1) $timeout = 30;
@@ -4132,11 +4150,22 @@ if (!function_exists('channel_bridge_now')) {
     if ($mimeType === '') $mimeType = 'application/octet-stream';
     $filename = basename($filePath);
     $fileObj = new CURLFile($filePath, $mimeType, $filename);
+    $postFields = [];
+    foreach ($extraFields as $key => $value) {
+      $key = trim((string)$key);
+      if ($key === '') {
+        continue;
+      }
+      if (is_scalar($value) || $value === null) {
+        $postFields[$key] = (string)$value;
+      }
+    }
+    $postFields[$fieldName] = $fileObj;
 
     $ch = curl_init($url);
     curl_setopt_array($ch, [
       CURLOPT_POST => true,
-      CURLOPT_POSTFIELDS => ['data' => $fileObj],
+      CURLOPT_POSTFIELDS => $postFields,
       CURLOPT_RETURNTRANSFER => true,
       CURLOPT_TIMEOUT => $timeout,
       CURLOPT_CONNECTTIMEOUT => 5,
@@ -4157,6 +4186,242 @@ if (!function_exists('channel_bridge_now')) {
     if (!is_array($json)) $json = [];
 
     return ['ok' => true, 'http_code' => $httpCode, 'raw' => $raw, 'json' => $json];
+  }
+
+  /**
+   * channel_bridge_vk_api_call()
+   * Выполняет один вызов VK API с общими настройками токена и версии.
+   *
+   * @param array<string,mixed> $settings
+   * @param string $method
+   * @param array<string,mixed> $params
+   * @return array<string,mixed>
+   */
+  function channel_bridge_vk_api_call(array $settings, string $method, array $params): array
+  {
+    return channel_bridge_vk_api_call_with_token($settings, $method, $params, '');
+  }
+
+  /**
+   * channel_bridge_vk_api_call_with_token()
+   * Выполняет один вызов VK API с явным token override.
+   *
+   * @param array<string,mixed> $settings
+   * @param string $method
+   * @param array<string,mixed> $params
+   * @param string $tokenOverride
+   * @return array<string,mixed>
+   */
+  function channel_bridge_vk_api_call_with_token(array $settings, string $method, array $params, string $tokenOverride = ''): array
+  {
+    $method = trim($method);
+    if ($method === '') {
+      return ['ok' => false, 'error' => 'VK_METHOD_EMPTY'];
+    }
+
+    $token = trim($tokenOverride);
+    if ($token === '') {
+      $token = trim((string)($settings['vk_group_token'] ?? ''));
+    }
+    if ($token === '') {
+      return ['ok' => false, 'error' => 'VK_TOKEN_EMPTY'];
+    }
+
+    $version = trim((string)($settings['vk_api_version'] ?? '5.199'));
+    if ($version === '') {
+      $version = '5.199';
+    }
+
+    $http = channel_bridge_http_post_form('https://api.vk.com/method/' . rawurlencode($method), array_merge($params, [
+      'access_token' => $token,
+      'v' => $version,
+    ]));
+    if (($http['ok'] ?? false) !== true) {
+      return ['ok' => false, 'error' => (string)($http['error'] ?? 'VK_HTTP_ERROR'), 'raw' => $http];
+    }
+
+    $json = (array)($http['json'] ?? []);
+    if (isset($json['error'])) {
+      $err = is_array($json['error']) ? (string)($json['error']['error_msg'] ?? 'VK_API_ERROR') : 'VK_API_ERROR';
+      return ['ok' => false, 'error' => $err, 'raw' => $json];
+    }
+
+    return ['ok' => true, 'raw' => $json, 'response' => $json['response'] ?? null];
+  }
+
+  /**
+   * channel_bridge_vk_route_extra_map()
+   * Возвращает target_extra маршрута как JSON-объект.
+   *
+   * @param array<string,mixed> $route
+   * @return array<string,mixed>
+   */
+  function channel_bridge_vk_route_extra_map(array $route): array
+  {
+    $extra = trim((string)($route['target_extra'] ?? ''));
+    if ($extra === '') {
+      return [];
+    }
+
+    $map = json_decode($extra, true);
+    return is_array($map) ? $map : [];
+  }
+
+  /**
+   * channel_bridge_vk_route_token_override()
+   * Возвращает token override из target_extra.
+   *
+   * Поддерживаемые ключи:
+   * - vk_access_token: общий token для upload + wall.post
+   * - vk_upload_token: token только для upload-методов
+   *
+   * @param array<string,mixed> $route
+   * @param string $purpose
+   * @return string
+   */
+  function channel_bridge_vk_route_token_override(array $route, string $purpose = 'post'): string
+  {
+    $extraMap = channel_bridge_vk_route_extra_map($route);
+    $purpose = strtolower(trim($purpose));
+
+    if ($purpose === 'upload') {
+      $uploadToken = trim((string)($extraMap['vk_upload_token'] ?? ''));
+      if ($uploadToken !== '') {
+        return $uploadToken;
+      }
+    }
+
+    return trim((string)($extraMap['vk_access_token'] ?? ''));
+  }
+
+  /**
+   * channel_bridge_vk_group_id_from_owner_id()
+   * Возвращает group_id для сообщества VK по owner_id стены.
+   *
+   * @param int $ownerId
+   * @return int
+   */
+  function channel_bridge_vk_group_id_from_owner_id(int $ownerId): int
+  {
+    return ($ownerId < 0) ? abs($ownerId) : 0;
+  }
+
+  /**
+   * channel_bridge_vk_make_photo_attachment_from_local_file()
+   * Загружает локальное изображение в VK и возвращает attachment для wall.post.
+   *
+   * @param array<string,mixed> $settings
+   * @param int $ownerId
+   * @param string $filePath
+   * @return array<string,mixed>
+   */
+  function channel_bridge_vk_make_photo_attachment_from_local_file(array $settings, int $ownerId, string $filePath, string $tokenOverride = ''): array
+  {
+    $filePath = trim($filePath);
+    if ($filePath === '' || !is_file($filePath)) {
+      return ['ok' => false, 'error' => 'LOCAL_FILE_NOT_FOUND'];
+    }
+
+    $groupId = channel_bridge_vk_group_id_from_owner_id($ownerId);
+    $uploadParams = [];
+    if ($groupId > 0) {
+      $uploadParams['group_id'] = $groupId;
+    }
+
+    $uploadServer = channel_bridge_vk_api_call_with_token($settings, 'photos.getWallUploadServer', $uploadParams, $tokenOverride);
+    if (($uploadServer['ok'] ?? false) !== true) {
+      return $uploadServer;
+    }
+
+    $uploadData = is_array($uploadServer['response'] ?? null) ? (array)$uploadServer['response'] : [];
+    $uploadUrl = trim((string)($uploadData['upload_url'] ?? ''));
+    if ($uploadUrl === '') {
+      return ['ok' => false, 'error' => 'VK_UPLOAD_URL_EMPTY', 'raw' => $uploadServer['raw'] ?? []];
+    }
+
+    $uploadFile = channel_bridge_http_post_multipart_file_field($uploadUrl, $filePath, 'photo');
+    if (($uploadFile['ok'] ?? false) !== true) {
+      return ['ok' => false, 'error' => (string)($uploadFile['error'] ?? 'VK_UPLOAD_HTTP_ERROR'), 'raw' => $uploadFile];
+    }
+
+    $uploadJson = (array)($uploadFile['json'] ?? []);
+    $photo = $uploadJson['photo'] ?? '';
+    $server = $uploadJson['server'] ?? '';
+    $hash = $uploadJson['hash'] ?? '';
+    if ($photo === '' || $server === '' || $hash === '') {
+      return ['ok' => false, 'error' => 'VK_UPLOAD_PAYLOAD_EMPTY', 'raw' => $uploadFile];
+    }
+
+    $saveParams = [
+      'photo' => is_string($photo) ? $photo : json_encode($photo, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+      'server' => (string)$server,
+      'hash' => (string)$hash,
+    ];
+    if ($groupId > 0) {
+      $saveParams['group_id'] = $groupId;
+    }
+
+    $save = channel_bridge_vk_api_call_with_token($settings, 'photos.saveWallPhoto', $saveParams, $tokenOverride);
+    if (($save['ok'] ?? false) !== true) {
+      return $save;
+    }
+
+    $saveRows = is_array($save['response'] ?? null) ? (array)$save['response'] : [];
+    $saved = isset($saveRows[0]) && is_array($saveRows[0]) ? (array)$saveRows[0] : [];
+    $savedOwnerId = trim((string)($saved['owner_id'] ?? ''));
+    $savedPhotoId = trim((string)($saved['id'] ?? ''));
+    if ($savedOwnerId === '' || $savedPhotoId === '') {
+      return ['ok' => false, 'error' => 'VK_SAVED_PHOTO_EMPTY', 'raw' => $save['raw'] ?? []];
+    }
+
+    $attachment = 'photo' . $savedOwnerId . '_' . $savedPhotoId;
+    $accessKey = trim((string)($saved['access_key'] ?? ''));
+    if ($accessKey !== '') {
+      $attachment .= '_' . $accessKey;
+    }
+
+    return ['ok' => true, 'attachment' => $attachment, 'raw' => $save['raw'] ?? []];
+  }
+
+  /**
+   * channel_bridge_vk_make_photo_attachment()
+   * Загружает фото из Telegram в VK по file_id и возвращает attachment для wall.post.
+   *
+   * @param array<string,mixed> $settings
+   * @param int $ownerId
+   * @param string $tgFileId
+   * @return array<string,mixed>
+   */
+  function channel_bridge_vk_make_photo_attachment(array $settings, int $ownerId, string $tgFileId, string $tokenOverride = ''): array
+  {
+    $tgFileId = trim($tgFileId);
+    if ($tgFileId === '') {
+      return ['ok' => false, 'error' => 'TG_PHOTO_NOT_FOUND'];
+    }
+
+    $tgToken = trim((string)($settings['tg_bot_token'] ?? ''));
+    if ($tgToken === '') {
+      return ['ok' => false, 'error' => 'TG_TOKEN_EMPTY'];
+    }
+
+    $fileUrlRes = channel_bridge_tg_build_file_download_url($tgToken, $tgFileId);
+    if (($fileUrlRes['ok'] ?? false) !== true) {
+      return ['ok' => false, 'error' => (string)($fileUrlRes['error'] ?? 'TG_FILE_URL_ERROR'), 'raw' => $fileUrlRes];
+    }
+
+    $download = channel_bridge_http_download_to_tmp((string)($fileUrlRes['url'] ?? ''), 30);
+    if (($download['ok'] ?? false) !== true) {
+      return ['ok' => false, 'error' => (string)($download['error'] ?? 'TG_FILE_DOWNLOAD_ERROR'), 'raw' => $download];
+    }
+
+    $tmpPath = trim((string)($download['path'] ?? ''));
+    try {
+      return channel_bridge_vk_make_photo_attachment_from_local_file($settings, $ownerId, $tmpPath, $tokenOverride);
+    } finally {
+      if ($tmpPath !== '' && is_file($tmpPath)) {
+        @unlink($tmpPath);
+      }
+    }
   }
 
   /**
@@ -5959,7 +6224,7 @@ if (!function_exists('channel_bridge_now')) {
    * @param string $text
    * @return array<string,mixed>
    */
-  function channel_bridge_send_vk(array $settings, array $route, string $text): array
+  function channel_bridge_send_vk(array $settings, array $route, string $text, array $sourceMeta = []): array
   {
     if ((int)($settings['vk_enabled'] ?? 0) !== 1) {
       return ['ok' => false, 'error' => 'VK_DISABLED'];
@@ -5977,29 +6242,96 @@ if (!function_exists('channel_bridge_now')) {
     if ($ownerId === '') {
       return ['ok' => false, 'error' => 'VK_OWNER_ID_EMPTY'];
     }
+    if (!preg_match('~^-?\d+$~', $ownerId)) {
+      return ['ok' => false, 'error' => 'VK_OWNER_ID_INVALID'];
+    }
+    $ownerIdInt = (int)$ownerId;
+    $postTokenOverride = channel_bridge_vk_route_token_override($route, 'post');
+    $uploadTokenOverride = channel_bridge_vk_route_token_override($route, 'upload');
 
-    $version = trim((string)($settings['vk_api_version'] ?? '5.199'));
-    if ($version === '') $version = '5.199';
+    $localMap = is_array(($sourceMeta['cb_photo_local_map'] ?? null)) ? (array)($sourceMeta['cb_photo_local_map'] ?? []) : [];
+    $localPaths = channel_bridge_tg_source_photo_local_paths($sourceMeta);
+    $photoIds = channel_bridge_tg_source_photo_file_ids($sourceMeta);
+    $attachmentErrors = [];
+    $attachments = [];
 
-    $http = channel_bridge_http_post_form('https://api.vk.com/method/wall.post', [
-      'owner_id' => $ownerId,
-      'from_group' => 1,
+    if ($localMap) {
+      if (!$photoIds) {
+        $photoIds = array_keys($localMap);
+      }
+      foreach ($photoIds as $pid) {
+        $localPath = trim((string)($localMap[$pid] ?? ''));
+        if ($localPath !== '' && is_file($localPath)) {
+          $imgAttachment = channel_bridge_vk_make_photo_attachment_from_local_file($settings, $ownerIdInt, $localPath, $uploadTokenOverride);
+        } else {
+          $imgAttachment = channel_bridge_vk_make_photo_attachment($settings, $ownerIdInt, $pid, $uploadTokenOverride);
+        }
+        if (($imgAttachment['ok'] ?? false) === true) {
+          $attachments[] = (string)($imgAttachment['attachment'] ?? '');
+          continue;
+        }
+        $attachmentErrors[] = trim((string)($imgAttachment['error'] ?? 'VK_ATTACHMENT_ERROR'));
+      }
+    } elseif ($localPaths) {
+      foreach ($localPaths as $path) {
+        $imgAttachment = channel_bridge_vk_make_photo_attachment_from_local_file($settings, $ownerIdInt, $path, $uploadTokenOverride);
+        if (($imgAttachment['ok'] ?? false) === true) {
+          $attachments[] = (string)($imgAttachment['attachment'] ?? '');
+          continue;
+        }
+        $attachmentErrors[] = trim((string)($imgAttachment['error'] ?? 'VK_ATTACHMENT_ERROR'));
+      }
+    } else {
+      foreach ($photoIds as $pid) {
+        $imgAttachment = channel_bridge_vk_make_photo_attachment($settings, $ownerIdInt, $pid, $uploadTokenOverride);
+        if (($imgAttachment['ok'] ?? false) === true) {
+          $attachments[] = (string)($imgAttachment['attachment'] ?? '');
+          continue;
+        }
+        $attachmentErrors[] = trim((string)($imgAttachment['error'] ?? 'VK_ATTACHMENT_ERROR'));
+      }
+    }
+
+    $attachments = array_values(array_filter(array_map('trim', $attachments), static function ($item) {
+      return $item !== '';
+    }));
+
+    if ($attachmentErrors && function_exists('audit_log')) {
+      audit_log(CHANNEL_BRIDGE_MODULE_CODE, 'vk_attachment_skip', 'warn', [
+        'errors' => implode(';', $attachmentErrors),
+        'source_chat_id' => (string)($sourceMeta['source_chat_id'] ?? ''),
+        'source_message_id' => (string)($sourceMeta['source_message_id'] ?? ''),
+        'photos_total' => $localMap ? count($photoIds) : ($localPaths ? count($localPaths) : count($photoIds)),
+        'photos_failed' => count($attachmentErrors),
+      ]);
+    }
+    if (($localMap || $localPaths || $photoIds) && $attachmentErrors) {
+      return [
+        'ok' => false,
+        'error' => 'VK_ATTACHMENT_PARTIAL',
+        'raw' => [
+          'photos_total' => $localMap ? count($photoIds) : ($localPaths ? count($localPaths) : count($photoIds)),
+          'photos_failed' => count($attachmentErrors),
+          'errors' => $attachmentErrors,
+        ],
+      ];
+    }
+
+    $postParams = [
+      'owner_id' => $ownerIdInt,
+      'from_group' => channel_bridge_vk_group_id_from_owner_id($ownerIdInt) > 0 ? 1 : 0,
       'message' => $text,
-      'access_token' => $token,
-      'v' => $version,
-    ]);
-    if (($http['ok'] ?? false) !== true) {
-      return ['ok' => false, 'error' => (string)($http['error'] ?? 'VK_HTTP_ERROR'), 'raw' => $http];
+    ];
+    if ($attachments) {
+      $postParams['attachments'] = implode(',', $attachments);
     }
 
-    $json = (array)($http['json'] ?? []);
-    if (isset($json['error'])) {
-      $err = is_array($json['error']) ? (string)($json['error']['error_msg'] ?? 'VK_API_ERROR') : 'VK_API_ERROR';
-      return ['ok' => false, 'error' => $err, 'raw' => $json];
+    $post = channel_bridge_vk_api_call_with_token($settings, 'wall.post', $postParams, $postTokenOverride);
+    if (($post['ok'] ?? false) !== true) {
+      return ['ok' => false, 'error' => (string)($post['error'] ?? 'VK_API_ERROR'), 'raw' => $post['raw'] ?? []];
     }
 
-    $ok = isset($json['response']);
-    return ['ok' => $ok, 'raw' => $json, 'error' => $ok ? '' : 'VK_BAD_RESPONSE'];
+    return ['ok' => true, 'raw' => $post['raw'] ?? [], 'error' => ''];
   }
 
   /**
@@ -6189,7 +6521,7 @@ if (!function_exists('channel_bridge_now')) {
       return channel_bridge_send_tg($settings, $route, $text, $sourceMeta);
     }
     if ($target === CHANNEL_BRIDGE_TARGET_VK) {
-      return channel_bridge_send_vk($settings, $route, $text);
+      return channel_bridge_send_vk($settings, $route, $text, $sourceMeta);
     }
     if ($target === CHANNEL_BRIDGE_TARGET_MAX) {
       return channel_bridge_send_max($settings, $route, $text, $sourceMeta);

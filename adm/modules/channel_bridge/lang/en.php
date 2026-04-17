@@ -99,6 +99,7 @@ return [
   'channel_bridge.field_target_chat_id' => 'Target (chat/channel id)',
   'channel_bridge.field_auto_bind_target' => 'Auto-bind target by code (TG target only)',
   'channel_bridge.field_target_extra' => 'Target extra params (JSON)',
+  'channel_bridge.field_target_extra_hint' => 'For VK with photos you can set {"vk_upload_token":"..."} or {"vk_access_token":"..."} when upload methods are unavailable for a group token.',
   'channel_bridge.field_blacklist_domains' => 'Blacklisted substrings',
   'channel_bridge.field_blacklist_domains_hint' => 'If any post link contains one of these substrings, this route is skipped. One substring per line or comma-separated.',
   'channel_bridge.field_route_enabled' => 'Route enabled',
