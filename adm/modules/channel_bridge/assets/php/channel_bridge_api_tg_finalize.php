@@ -18,13 +18,14 @@ try {
 
   $sourceChatId = channel_bridge_norm_chat_id((string)($_REQUEST['source_chat_id'] ?? ''));
   $mediaGroupId = trim((string)($_REQUEST['media_group_id'] ?? ''));
+  $dispatchToken = trim((string)($_REQUEST['dispatch_token'] ?? ''));
   if ($sourceChatId === '' || $mediaGroupId === '') {
     json_err('source_chat_id and media_group_id are required', 400);
   }
 
   $pdo = db();
   $settings = channel_bridge_settings_get($pdo);
-  $result = channel_bridge_tg_state_finalize_album($pdo, $settings, $sourceChatId, $mediaGroupId);
+  $result = channel_bridge_tg_state_finalize_album($pdo, $settings, $sourceChatId, $mediaGroupId, $dispatchToken);
   if (($result['ok'] ?? false) !== true) {
     json_err((string)($result['message'] ?? $result['reason'] ?? 'Finalize failed'), 500, $result);
   }

@@ -1573,6 +1573,31 @@ if (!function_exists('channel_bridge_now')) {
   }
 
   /**
+   * channel_bridge_tg_sweep_endpoint_url()
+   * Returns absolute or relative internal endpoint URL for Telegram album sweep/retry.
+   *
+   * @param bool $absolute
+   * @return string
+   */
+  function channel_bridge_tg_sweep_endpoint_url(bool $absolute = true): string
+  {
+    $path = function_exists('url')
+      ? (string)url('/core/channel_bridge_tg_sweep.php')
+      : '/core/channel_bridge_tg_sweep.php';
+
+    if (!$absolute) {
+      return $path;
+    }
+
+    $root = channel_bridge_public_root_url();
+    if ($root === '') {
+      return $path;
+    }
+
+    return $root . $path;
+  }
+
+  /**
    * channel_bridge_http_fire_and_forget()
    * Sends a best-effort asynchronous GET request and closes the socket without waiting.
    *
@@ -1676,14 +1701,15 @@ if (!function_exists('channel_bridge_now')) {
   }
 
   /**
-   * channel_bridge_tg_state_spawn_finalize()
-   * Schedules Telegram album finalization via separate internal request.
+   * channel_bridge_tg_state_try_start_finalize()
+   * Acquires one async finalize runner per Telegram album.
    *
+   * @param PDO $pdo
    * @param string $sourceChatId
    * @param string $mediaGroupId
    * @return array<string,mixed>
    */
-  function channel_bridge_tg_state_spawn_finalize(string $sourceChatId, string $mediaGroupId): array
+  function channel_bridge_tg_state_try_start_finalize(PDO $pdo, string $sourceChatId, string $mediaGroupId): array
   {
     $sourceChatId = channel_bridge_norm_chat_id($sourceChatId);
     $mediaGroupId = trim($mediaGroupId);
@@ -1691,24 +1717,268 @@ if (!function_exists('channel_bridge_now')) {
       return ['ok' => false, 'error' => 'BAD_META'];
     }
 
+    $pdo->beginTransaction();
+    try {
+      $st = $pdo->prepare("
+        SELECT id, dispatch_status, dispatch_token, dispatch_started_at
+        FROM " . CHANNEL_BRIDGE_TABLE_TG_ALBUMS . "
+        WHERE source_chat_id = :source_chat_id
+          AND media_group_id = :media_group_id
+        LIMIT 1
+        FOR UPDATE
+      ");
+      $st->execute([
+        ':source_chat_id' => $sourceChatId,
+        ':media_group_id' => $mediaGroupId,
+      ]);
+      $row = $st->fetch(PDO::FETCH_ASSOC);
+      if (!is_array($row)) {
+        $pdo->commit();
+        return ['ok' => false, 'error' => 'TG_STATE_ALBUM_NOT_FOUND'];
+      }
+
+      $dispatchStatus = trim((string)($row['dispatch_status'] ?? 'pending'));
+      if (channel_bridge_tg_album_status_is_terminal($dispatchStatus)) {
+        $pdo->commit();
+        return [
+          'ok' => true,
+          'reason' => ($dispatchStatus === 'sent') ? 'already_sent' : 'already_terminal',
+          'dispatch_status' => $dispatchStatus,
+        ];
+      }
+
+      $startedAtTs = channel_bridge_tg_state_datetime_ts((string)($row['dispatch_started_at'] ?? ''));
+      $isStale = ($startedAtTs > 0 && (time() - $startedAtTs) >= CHANNEL_BRIDGE_MEDIA_GROUP_DISPATCH_STALE_SECONDS);
+      if (in_array($dispatchStatus, ['finalizing', 'dispatching'], true) && !$isStale) {
+        $pdo->commit();
+        return [
+          'ok' => true,
+          'reason' => 'already_running',
+          'dispatch_status' => $dispatchStatus,
+        ];
+      }
+
+      $dispatchToken = hash('sha256', $sourceChatId . '|' . $mediaGroupId . '|finalize|' . microtime(true) . '|' . mt_rand(1, PHP_INT_MAX));
+      $pdo->prepare("
+        UPDATE " . CHANNEL_BRIDGE_TABLE_TG_ALBUMS . "
+        SET
+          dispatch_status = 'finalizing',
+          dispatch_token = :dispatch_token,
+          dispatch_revision = dispatch_revision + 1,
+          dispatch_started_at = :dispatch_started_at,
+          last_error = ''
+        WHERE id = :id
+      ")->execute([
+        ':dispatch_token' => $dispatchToken,
+        ':dispatch_started_at' => channel_bridge_now(),
+        ':id' => (int)($row['id'] ?? 0),
+      ]);
+
+      $pdo->commit();
+      return [
+        'ok' => true,
+        'reason' => 'started',
+        'dispatch_token' => $dispatchToken,
+      ];
+    } catch (Throwable $e) {
+      if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+      }
+      throw $e;
+    }
+  }
+
+  /**
+   * channel_bridge_tg_state_spawn_finalize()
+   * Schedules Telegram album finalization via separate internal request.
+   *
+   * @param PDO $pdo
+   * @param string $sourceChatId
+   * @param string $mediaGroupId
+   * @return array<string,mixed>
+   */
+  function channel_bridge_tg_state_spawn_finalize(PDO $pdo, string $sourceChatId, string $mediaGroupId): array
+  {
+    $sourceChatId = channel_bridge_norm_chat_id($sourceChatId);
+    $mediaGroupId = trim($mediaGroupId);
+    if ($sourceChatId === '' || $mediaGroupId === '') {
+      return ['ok' => false, 'error' => 'BAD_META'];
+    }
+
+    $start = channel_bridge_tg_state_try_start_finalize($pdo, $sourceChatId, $mediaGroupId);
+    if (($start['ok'] ?? false) !== true) {
+      return $start;
+    }
+    $startReason = trim((string)($start['reason'] ?? ''));
+    if (in_array($startReason, ['already_running', 'already_sent', 'already_terminal'], true)) {
+      return $start;
+    }
+
+    $dispatchToken = trim((string)($start['dispatch_token'] ?? ''));
+    if ($dispatchToken === '') {
+      return ['ok' => false, 'error' => 'FINALIZE_TOKEN_MISSING'];
+    }
+
     $token = channel_bridge_tg_finalize_auth_token();
     if ($token === '') {
+      channel_bridge_tg_state_album_finish($pdo, $sourceChatId, $mediaGroupId, $dispatchToken, false, 'FINALIZE_TOKEN_EMPTY');
       return ['ok' => false, 'error' => 'FINALIZE_TOKEN_EMPTY'];
     }
 
     $baseUrl = channel_bridge_tg_finalize_endpoint_url(true);
     if ($baseUrl === '' || stripos($baseUrl, 'http') !== 0) {
+      channel_bridge_tg_state_album_finish($pdo, $sourceChatId, $mediaGroupId, $dispatchToken, false, 'FINALIZE_URL_EMPTY');
       return ['ok' => false, 'error' => 'FINALIZE_URL_EMPTY'];
     }
 
     $query = http_build_query([
       'source_chat_id' => $sourceChatId,
       'media_group_id' => $mediaGroupId,
+      'dispatch_token' => $dispatchToken,
+      'token' => $token,
+    ]);
+    $url = $baseUrl . (strpos($baseUrl, '?') === false ? '?' : '&') . $query;
+
+    $spawn = channel_bridge_http_fire_and_forget($url, [], 1.0);
+    if (($spawn['ok'] ?? false) !== true) {
+      channel_bridge_tg_state_album_finish($pdo, $sourceChatId, $mediaGroupId, $dispatchToken, false, 'FINALIZE_SPAWN_FAILED');
+    }
+
+    return $spawn + [
+      'reason' => 'spawned',
+      'dispatch_token' => $dispatchToken,
+    ];
+  }
+
+  /**
+   * channel_bridge_tg_state_spawn_sweeper()
+   * Starts background sweep/retry loop for stuck Telegram albums.
+   *
+   * @return array<string,mixed>
+   */
+  function channel_bridge_tg_state_spawn_sweeper(): array
+  {
+    $token = channel_bridge_tg_finalize_auth_token();
+    if ($token === '') {
+      return ['ok' => false, 'error' => 'FINALIZE_TOKEN_EMPTY'];
+    }
+
+    $baseUrl = channel_bridge_tg_sweep_endpoint_url(true);
+    if ($baseUrl === '' || stripos($baseUrl, 'http') !== 0) {
+      return ['ok' => false, 'error' => 'SWEEP_URL_EMPTY'];
+    }
+
+    $query = http_build_query([
       'token' => $token,
     ]);
     $url = $baseUrl . (strpos($baseUrl, '?') === false ? '?' : '&') . $query;
 
     return channel_bridge_http_fire_and_forget($url, [], 1.0);
+  }
+
+  /**
+   * channel_bridge_tg_sweep_lock_name()
+   *
+   * @return string
+   */
+  function channel_bridge_tg_sweep_lock_name(): string
+  {
+    return 'channel_bridge_tg_album_sweep';
+  }
+
+  /**
+   * channel_bridge_tg_sweep_try_lock()
+   *
+   * @param PDO $pdo
+   * @return bool
+   */
+  function channel_bridge_tg_sweep_try_lock(PDO $pdo): bool
+  {
+    $lockName = $pdo->quote(channel_bridge_tg_sweep_lock_name());
+    $st = $pdo->query("SELECT GET_LOCK(" . $lockName . ", 0) AS got_lock");
+    $row = $st ? $st->fetch(PDO::FETCH_ASSOC) : false;
+    return ((int)($row['got_lock'] ?? 0) === 1);
+  }
+
+  /**
+   * channel_bridge_tg_sweep_release_lock()
+   *
+   * @param PDO $pdo
+   * @return void
+   */
+  function channel_bridge_tg_sweep_release_lock(PDO $pdo): void
+  {
+    $lockName = $pdo->quote(channel_bridge_tg_sweep_lock_name());
+    $pdo->query("DO RELEASE_LOCK(" . $lockName . ")");
+  }
+
+  /**
+   * channel_bridge_tg_album_status_is_terminal()
+   *
+   * @param string $status
+   * @return bool
+   */
+  function channel_bridge_tg_album_status_is_terminal(string $status): bool
+  {
+    return in_array(trim($status), ['sent', 'failed', 'abandoned'], true);
+  }
+
+  /**
+   * channel_bridge_tg_album_retry_limit_reached()
+   *
+   * @param int $attempts
+   * @return bool
+   */
+  function channel_bridge_tg_album_retry_limit_reached(int $attempts): bool
+  {
+    return ($attempts >= max(1, (int)CHANNEL_BRIDGE_MEDIA_GROUP_MAX_RETRIES));
+  }
+
+  /**
+   * channel_bridge_tg_state_album_mark_terminal()
+   * Marks album as terminal so it cannot be retried by webhook/sweeper.
+   *
+   * @param PDO $pdo
+   * @param string $sourceChatId
+   * @param string $mediaGroupId
+   * @param string $status
+   * @param string $errorText
+   * @return array<string,mixed>
+   */
+  function channel_bridge_tg_state_album_mark_terminal(PDO $pdo, string $sourceChatId, string $mediaGroupId, string $status, string $errorText = ''): array
+  {
+    $sourceChatId = channel_bridge_norm_chat_id($sourceChatId);
+    $mediaGroupId = trim($mediaGroupId);
+    $status = trim($status);
+    $errorText = trim($errorText);
+    if ($sourceChatId === '' || $mediaGroupId === '' || !in_array($status, ['sent', 'failed', 'abandoned'], true)) {
+      return ['ok' => false, 'reason' => 'bad_meta'];
+    }
+
+    $st = $pdo->prepare("
+      UPDATE " . CHANNEL_BRIDGE_TABLE_TG_ALBUMS . "
+      SET
+        dispatch_status = :dispatch_status,
+        dispatch_token = '',
+        dispatch_started_at = NULL,
+        dispatched_at = :dispatched_at,
+        last_error = :last_error
+      WHERE source_chat_id = :source_chat_id
+        AND media_group_id = :media_group_id
+    ");
+    $st->execute([
+      ':dispatch_status' => $status,
+      ':dispatched_at' => ($status === 'sent') ? channel_bridge_now() : null,
+      ':last_error' => $errorText,
+      ':source_chat_id' => $sourceChatId,
+      ':media_group_id' => $mediaGroupId,
+    ]);
+
+    return [
+      'ok' => true,
+      'updated' => (int)$st->rowCount(),
+      'status' => $status,
+    ];
   }
 
   /**
@@ -4412,13 +4682,13 @@ if (!function_exists('channel_bridge_now')) {
         photos_failed = VALUES(photos_failed),
         first_seen_at = LEAST(first_seen_at, VALUES(first_seen_at)),
         last_seen_at = VALUES(last_seen_at),
-        revision = IF(dispatch_status = 'sent', revision, revision + 1),
-        dispatch_status = IF(dispatch_status = 'sent', dispatch_status, 'pending'),
-        dispatch_token = IF(dispatch_status = 'sent', dispatch_token, ''),
-        dispatch_revision = IF(dispatch_status = 'sent', dispatch_revision, 0),
-        dispatch_started_at = IF(dispatch_status = 'sent', dispatch_started_at, NULL),
+        revision = IF(dispatch_status IN ('sent', 'failed', 'abandoned'), revision, revision + 1),
+        dispatch_status = IF(dispatch_status IN ('sent', 'failed', 'abandoned'), dispatch_status, IF(dispatch_status IN ('finalizing', 'dispatching'), dispatch_status, 'pending')),
+        dispatch_token = IF(dispatch_status IN ('sent', 'failed', 'abandoned'), dispatch_token, IF(dispatch_status IN ('finalizing', 'dispatching'), dispatch_token, '')),
+        dispatch_revision = IF(dispatch_status IN ('sent', 'failed', 'abandoned'), dispatch_revision, IF(dispatch_status IN ('finalizing', 'dispatching'), dispatch_revision, dispatch_revision)),
+        dispatch_started_at = IF(dispatch_status IN ('sent', 'failed', 'abandoned'), dispatch_started_at, IF(dispatch_status IN ('finalizing', 'dispatching'), dispatch_started_at, NULL)),
         dispatched_at = IF(dispatch_status = 'sent', dispatched_at, NULL),
-        last_error = IF(dispatch_status = 'sent', last_error, '')
+        last_error = IF(dispatch_status IN ('sent', 'failed', 'abandoned'), last_error, IF(dispatch_status IN ('finalizing', 'dispatching'), last_error, ''))
     ")->execute([
       ':source_chat_id' => $sourceChatId,
       ':media_group_id' => $mediaGroupId,
@@ -4721,12 +4991,13 @@ if (!function_exists('channel_bridge_now')) {
         }
 
         $dispatchStatus = trim((string)($row['dispatch_status'] ?? 'pending'));
-        if ($dispatchStatus === 'sent') {
+        if (channel_bridge_tg_album_status_is_terminal($dispatchStatus)) {
           $pdo->commit();
           return [
-            'mode' => 'sent',
+            'mode' => ($dispatchStatus === 'sent') ? 'sent' : 'terminal',
             'media_group_id' => $mediaGroupId,
-            'reason' => 'already_sent',
+            'reason' => ($dispatchStatus === 'sent') ? 'already_sent' : 'already_terminal',
+            'dispatch_status' => $dispatchStatus,
           ];
         }
 
@@ -4776,7 +5047,7 @@ if (!function_exists('channel_bridge_now')) {
             SET
               dispatch_status = 'dispatching',
               dispatch_token = :dispatch_token,
-              dispatch_revision = revision,
+              dispatch_revision = dispatch_revision,
               dispatch_started_at = :dispatch_started_at,
               last_error = ''
             WHERE id = :id
@@ -4863,7 +5134,7 @@ if (!function_exists('channel_bridge_now')) {
     $pdo->beginTransaction();
     try {
       $st = $pdo->prepare("
-        SELECT id, dispatch_token
+        SELECT id, dispatch_token, dispatch_revision
         FROM " . CHANNEL_BRIDGE_TABLE_TG_ALBUMS . "
         WHERE source_chat_id = :source_chat_id
           AND media_group_id = :media_group_id
@@ -4886,6 +5157,11 @@ if (!function_exists('channel_bridge_now')) {
         return ['ok' => true, 'reason' => 'claim_mismatch'];
       }
 
+      $dispatchAttempts = (int)($row['dispatch_revision'] ?? 0);
+      $nextStatus = $markSent
+        ? 'sent'
+        : (channel_bridge_tg_album_retry_limit_reached($dispatchAttempts) ? 'failed' : 'pending');
+
       $pdo->prepare("
         UPDATE " . CHANNEL_BRIDGE_TABLE_TG_ALBUMS . "
         SET
@@ -4897,20 +5173,206 @@ if (!function_exists('channel_bridge_now')) {
           last_error = :last_error
         WHERE id = :id
       ")->execute([
-        ':dispatch_status' => $markSent ? 'sent' : 'pending',
-        ':dispatched_at' => $markSent ? channel_bridge_now() : null,
+        ':dispatch_status' => $nextStatus,
+        ':dispatched_at' => ($nextStatus === 'sent') ? channel_bridge_now() : null,
         ':last_error' => $errorText,
         ':id' => (int)($row['id'] ?? 0),
       ]);
 
       $pdo->commit();
-      return ['ok' => true, 'reason' => $markSent ? 'marked_sent' : 'released'];
+      return ['ok' => true, 'reason' => ($nextStatus === 'sent') ? 'marked_sent' : (($nextStatus === 'failed') ? 'marked_failed' : 'released')];
     } catch (Throwable $e) {
       if ($pdo->inTransaction()) {
         $pdo->rollBack();
       }
       throw $e;
     }
+  }
+
+  /**
+   * channel_bridge_tg_state_album_reset_for_retry()
+   * Releases stale finalizing/dispatching album so sweeper can retry it.
+   *
+   * @param PDO $pdo
+   * @param string $sourceChatId
+   * @param string $mediaGroupId
+   * @param string $errorText
+   * @return array<string,mixed>
+   */
+  function channel_bridge_tg_state_album_reset_for_retry(PDO $pdo, string $sourceChatId, string $mediaGroupId, string $errorText = ''): array
+  {
+    $sourceChatId = channel_bridge_norm_chat_id($sourceChatId);
+    $mediaGroupId = trim($mediaGroupId);
+    $errorText = trim($errorText);
+    if ($sourceChatId === '' || $mediaGroupId === '') {
+      return ['ok' => false, 'reason' => 'bad_meta'];
+    }
+
+    $st = $pdo->prepare("
+      UPDATE " . CHANNEL_BRIDGE_TABLE_TG_ALBUMS . "
+      SET
+        dispatch_status = 'pending',
+        dispatch_token = '',
+        dispatch_revision = dispatch_revision,
+        dispatch_started_at = NULL,
+        last_error = :last_error
+      WHERE source_chat_id = :source_chat_id
+        AND media_group_id = :media_group_id
+        AND dispatch_status IN ('finalizing', 'dispatching')
+    ");
+    $st->execute([
+      ':last_error' => $errorText,
+      ':source_chat_id' => $sourceChatId,
+      ':media_group_id' => $mediaGroupId,
+    ]);
+
+    return [
+      'ok' => true,
+      'updated' => (int)$st->rowCount(),
+    ];
+  }
+
+  /**
+   * channel_bridge_tg_state_sweep_run()
+   * Retries quiet pending albums and recovers stale finalizing/dispatching ones.
+   *
+   * @param PDO $pdo
+   * @param array<string,mixed> $settings
+   * @return array<string,mixed>
+   */
+  function channel_bridge_tg_state_sweep_run(PDO $pdo, array $settings): array
+  {
+    if (!channel_bridge_tg_state_tables_available($pdo)) {
+      return ['ok' => false, 'reason' => 'state_tables_missing'];
+    }
+
+    if (!channel_bridge_tg_sweep_try_lock($pdo)) {
+      return ['ok' => true, 'reason' => 'already_running', 'claimed' => 0, 'spawned' => 0, 'reset' => 0];
+    }
+
+    $claimed = 0;
+    $spawned = 0;
+    $reset = 0;
+    $deadlineAt = microtime(true) + max(5, (int)CHANNEL_BRIDGE_MEDIA_GROUP_SWEEP_MAX_SECONDS);
+    $stepUs = max(250000, (int)CHANNEL_BRIDGE_MEDIA_GROUP_SWEEP_STEP_MS * 1000);
+
+    try {
+      while (microtime(true) < $deadlineAt) {
+        $candidateSql = "
+          SELECT
+            source_chat_id,
+            media_group_id,
+            dispatch_status,
+            dispatch_revision,
+            items_count,
+            first_seen_at,
+            last_seen_at,
+            dispatch_started_at,
+            updated_at,
+            last_error
+          FROM " . CHANNEL_BRIDGE_TABLE_TG_ALBUMS . "
+          WHERE dispatch_status IN ('pending', 'finalizing', 'dispatching')
+          ORDER BY
+            CASE dispatch_status
+              WHEN 'finalizing' THEN 0
+              WHEN 'dispatching' THEN 1
+              ELSE 2
+            END,
+            last_seen_at ASC
+          LIMIT " . max(1, (int)CHANNEL_BRIDGE_MEDIA_GROUP_SWEEP_BATCH);
+        $rows = $pdo->query($candidateSql);
+        $candidates = $rows ? $rows->fetchAll(PDO::FETCH_ASSOC) : [];
+        if (!$candidates) {
+          usleep($stepUs);
+          continue;
+        }
+
+        $loopDidWork = false;
+        foreach ($candidates as $row) {
+          $sourceChatId = channel_bridge_norm_chat_id((string)($row['source_chat_id'] ?? ''));
+          $mediaGroupId = trim((string)($row['media_group_id'] ?? ''));
+          $dispatchStatus = trim((string)($row['dispatch_status'] ?? 'pending'));
+          $dispatchAttempts = (int)($row['dispatch_revision'] ?? 0);
+          $itemsCount = (int)($row['items_count'] ?? 0);
+          if ($sourceChatId === '' || $mediaGroupId === '' || $itemsCount < (int)CHANNEL_BRIDGE_MEDIA_GROUP_MIN_ITEMS) {
+            continue;
+          }
+
+          $firstSeenTs = channel_bridge_tg_state_datetime_ts((string)($row['first_seen_at'] ?? ''));
+          $lastSeenTs = channel_bridge_tg_state_datetime_ts((string)($row['last_seen_at'] ?? ''));
+          $startedTs = channel_bridge_tg_state_datetime_ts((string)($row['dispatch_started_at'] ?? ''));
+          $updatedTs = channel_bridge_tg_state_datetime_ts((string)($row['updated_at'] ?? ''));
+          $nowTs = time();
+          $ageMs = ($firstSeenTs > 0) ? max(0, (int)round((microtime(true) - $firstSeenTs) * 1000)) : 0;
+          $idleMs = ($lastSeenTs > 0) ? max(0, (int)round((microtime(true) - $lastSeenTs) * 1000)) : 0;
+          $isQuiet = ($idleMs >= (int)CHANNEL_BRIDGE_MEDIA_GROUP_QUIET_MS);
+          $isMature = ($ageMs >= (int)CHANNEL_BRIDGE_MEDIA_GROUP_MIN_AGE_MS);
+          $cooldownPassed = ($updatedTs <= 0 || ($nowTs - $updatedTs) >= (int)CHANNEL_BRIDGE_MEDIA_GROUP_RETRY_COOLDOWN_SECONDS);
+          $isStale = ($startedTs > 0 && ($nowTs - $startedTs) >= (int)CHANNEL_BRIDGE_MEDIA_GROUP_DISPATCH_STALE_SECONDS);
+          $isHistoric = ($lastSeenTs > 0 && ($nowTs - $lastSeenTs) >= (int)CHANNEL_BRIDGE_MEDIA_GROUP_ABANDON_AFTER_SECONDS);
+          $isFreshEnough = ($lastSeenTs > 0 && ($nowTs - $lastSeenTs) <= (int)CHANNEL_BRIDGE_MEDIA_GROUP_ACTIVE_WINDOW_SECONDS);
+
+          if ($isHistoric) {
+            $abandoned = channel_bridge_tg_state_album_mark_terminal($pdo, $sourceChatId, $mediaGroupId, 'abandoned', 'SWEEP_HISTORIC_SKIPPED');
+            $reset += (int)($abandoned['updated'] ?? 0);
+            $loopDidWork = true;
+            continue;
+          }
+
+          if (!$isFreshEnough) {
+            continue;
+          }
+
+          if (in_array($dispatchStatus, ['finalizing', 'dispatching'], true)) {
+            if (!$isStale) {
+              continue;
+            }
+            if (channel_bridge_tg_album_retry_limit_reached($dispatchAttempts)) {
+              $failed = channel_bridge_tg_state_album_mark_terminal($pdo, $sourceChatId, $mediaGroupId, 'failed', 'STALE_RUNNER_RETRY_LIMIT');
+              $reset += (int)($failed['updated'] ?? 0);
+              $loopDidWork = true;
+              continue;
+            }
+            $released = channel_bridge_tg_state_album_reset_for_retry($pdo, $sourceChatId, $mediaGroupId, 'STALE_RUNNER_RECOVERED');
+            $reset += (int)($released['updated'] ?? 0);
+            $loopDidWork = true;
+          }
+
+          if (channel_bridge_tg_album_retry_limit_reached($dispatchAttempts)) {
+            $failed = channel_bridge_tg_state_album_mark_terminal($pdo, $sourceChatId, $mediaGroupId, 'failed', 'RETRY_LIMIT_REACHED');
+            $reset += (int)($failed['updated'] ?? 0);
+            $loopDidWork = true;
+            continue;
+          }
+
+          if (!$isQuiet || !$isMature || !$cooldownPassed) {
+            continue;
+          }
+
+          $claimed++;
+          $spawn = channel_bridge_tg_state_spawn_finalize($pdo, $sourceChatId, $mediaGroupId);
+          $spawnReason = trim((string)($spawn['reason'] ?? ''));
+          if (($spawn['ok'] ?? false) === true && !in_array($spawnReason, ['already_running', 'already_sent', 'already_terminal'], true)) {
+            $spawned++;
+            $loopDidWork = true;
+          }
+        }
+
+        if (!$loopDidWork) {
+          usleep($stepUs);
+        }
+      }
+    } finally {
+      channel_bridge_tg_sweep_release_lock($pdo);
+    }
+
+    return [
+      'ok' => true,
+      'reason' => 'completed',
+      'claimed' => $claimed,
+      'spawned' => $spawned,
+      'reset' => $reset,
+    ];
   }
 
   /**
@@ -4964,7 +5426,7 @@ if (!function_exists('channel_bridge_now')) {
    * @param string $mediaGroupId
    * @return array<string,mixed>
    */
-  function channel_bridge_tg_state_finalize_album(PDO $pdo, array $settings, string $sourceChatId, string $mediaGroupId): array
+  function channel_bridge_tg_state_finalize_album(PDO $pdo, array $settings, string $sourceChatId, string $mediaGroupId, string $runnerToken = ''): array
   {
     if (!channel_bridge_tg_state_tables_available($pdo)) {
       return ['ok' => false, 'reason' => 'state_tables_missing'];
@@ -4972,8 +5434,50 @@ if (!function_exists('channel_bridge_now')) {
 
     $sourceChatId = channel_bridge_norm_chat_id($sourceChatId);
     $mediaGroupId = trim($mediaGroupId);
+    $runnerToken = trim($runnerToken);
     if ($sourceChatId === '' || $mediaGroupId === '') {
       return ['ok' => false, 'reason' => 'bad_meta', 'message' => 'Album meta required'];
+    }
+
+    if ($runnerToken !== '') {
+      $st = $pdo->prepare("
+        SELECT dispatch_status, dispatch_token
+        FROM " . CHANNEL_BRIDGE_TABLE_TG_ALBUMS . "
+        WHERE source_chat_id = :source_chat_id
+          AND media_group_id = :media_group_id
+        LIMIT 1
+      ");
+      $st->execute([
+        ':source_chat_id' => $sourceChatId,
+        ':media_group_id' => $mediaGroupId,
+      ]);
+      $row = $st->fetch(PDO::FETCH_ASSOC);
+      if (!is_array($row)) {
+        return ['ok' => false, 'reason' => 'state_album_missing', 'message' => 'Album state not found'];
+      }
+      $dispatchStatus = trim((string)($row['dispatch_status'] ?? 'pending'));
+      if (channel_bridge_tg_album_status_is_terminal($dispatchStatus)) {
+        return [
+          'ok' => true,
+          'reason' => ($dispatchStatus === 'sent') ? 'media_group_already_sent' : 'media_group_terminal',
+          'targets' => 0,
+          'sent' => 0,
+          'failed' => 0,
+          'media_group_id' => $mediaGroupId,
+          'dispatch_status' => $dispatchStatus,
+        ];
+      }
+      $currentToken = trim((string)($row['dispatch_token'] ?? ''));
+      if ($currentToken === '' || !hash_equals($currentToken, $runnerToken)) {
+        return [
+          'ok' => true,
+          'reason' => 'finalize_runner_mismatch',
+          'targets' => 0,
+          'sent' => 0,
+          'failed' => 0,
+          'media_group_id' => $mediaGroupId,
+        ];
+      }
     }
 
     $claim = channel_bridge_tg_state_album_try_claim(
@@ -5007,6 +5511,17 @@ if (!function_exists('channel_bridge_now')) {
         'sent' => 0,
         'failed' => 0,
         'media_group_id' => $mediaGroupId,
+      ];
+    }
+    if ($mode === 'terminal') {
+      return [
+        'ok' => true,
+        'reason' => 'media_group_terminal',
+        'targets' => 0,
+        'sent' => 0,
+        'failed' => 0,
+        'media_group_id' => $mediaGroupId,
+        'dispatch_status' => trim((string)($claim['dispatch_status'] ?? '')),
       ];
     }
     if ($mode !== 'ready') {
