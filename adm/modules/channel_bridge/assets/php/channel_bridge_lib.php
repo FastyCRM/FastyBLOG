@@ -6262,6 +6262,48 @@ if (!function_exists('channel_bridge_now')) {
   }
 
   /**
+   * channel_bridge_dispatch_already_sent()
+   * Prevents duplicate delivery of the same source message to the same route.
+   *
+   * @param PDO $pdo
+   * @param int $routeId
+   * @param string $sourcePlatform
+   * @param string $sourceChatId
+   * @param string $sourceMessageId
+   * @return bool
+   */
+  function channel_bridge_dispatch_already_sent(PDO $pdo, int $routeId, string $sourcePlatform, string $sourceChatId, string $sourceMessageId): bool
+  {
+    $routeId = (int)$routeId;
+    $sourcePlatform = channel_bridge_norm_platform($sourcePlatform);
+    $sourceChatId = channel_bridge_norm_chat_id($sourceChatId);
+    $sourceMessageId = trim($sourceMessageId);
+    if ($routeId <= 0 || $sourcePlatform === '' || $sourceChatId === '' || $sourceMessageId === '') {
+      return false;
+    }
+
+    $st = $pdo->prepare("
+      SELECT id
+      FROM " . CHANNEL_BRIDGE_TABLE_DISPATCH_LOG . "
+      WHERE route_id = :route_id
+        AND source_platform = :source_platform
+        AND source_chat_id = :source_chat_id
+        AND source_message_id = :source_message_id
+        AND send_status = 'sent'
+      ORDER BY id DESC
+      LIMIT 1
+    ");
+    $st->execute([
+      ':route_id' => $routeId,
+      ':source_platform' => $sourcePlatform,
+      ':source_chat_id' => $sourceChatId,
+      ':source_message_id' => $sourceMessageId,
+    ]);
+
+    return (bool)$st->fetchColumn();
+  }
+
+  /**
    * channel_bridge_collect_routes_for_source()
    * Возвращает активные маршруты для заданного источника.
    *
@@ -6532,6 +6574,29 @@ if (!function_exists('channel_bridge_now')) {
         $routeId = (int)($route['id'] ?? 0);
         $targetPlatform = channel_bridge_norm_platform((string)($route['target_platform'] ?? ''));
         $targetChatId = channel_bridge_norm_chat_id((string)($route['target_chat_id'] ?? ''));
+
+        if (channel_bridge_dispatch_already_sent($pdo, $routeId, $sourcePlatform, $sourceChatId, $sourceMessageId)) {
+          $skipped++;
+
+          channel_bridge_log_dispatch($pdo, [
+            'route_id' => $routeId,
+            'source_platform' => $sourcePlatform,
+            'source_chat_id' => $sourceChatId,
+            'source_message_id' => $sourceMessageId,
+            'target_platform' => $targetPlatform,
+            'target_chat_id' => $targetChatId,
+            'message_text' => $dispatchText,
+            'send_status' => 'skipped',
+            'error_text' => 'already_sent_route',
+            'response_raw' => json_encode([
+              'reason' => 'already_sent_route',
+              'route_id' => $routeId,
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+          ]);
+
+          continue;
+        }
+
         $blacklistMatch = channel_bridge_route_blacklist_match(
           (string)($route['blacklist_domains'] ?? ''),
           $messageText,
