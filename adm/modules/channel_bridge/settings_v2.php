@@ -23,6 +23,8 @@ const CHANNEL_BRIDGE_TABLE_TG_POSTS = 'channel_bridge_tg_posts';
 const CHANNEL_BRIDGE_TABLE_TG_POST_PHOTOS = 'channel_bridge_tg_post_photos';
 const CHANNEL_BRIDGE_TABLE_TG_ALBUMS = 'channel_bridge_tg_albums';
 const CHANNEL_BRIDGE_TABLE_JOBS = 'channel_bridge_jobs';
+const CHANNEL_BRIDGE_TABLE_VK_CLEANUP_TASKS = 'channel_bridge_vk_cleanup_tasks';
+const CHANNEL_BRIDGE_TABLE_VK_CLEANUP_ITEMS = 'channel_bridge_vk_cleanup_items';
 
 const CHANNEL_BRIDGE_MEDIA_GROUP_WAIT_MAX_MS = 15000;
 const CHANNEL_BRIDGE_MEDIA_GROUP_WAIT_STEP_MS = 100;
@@ -46,6 +48,10 @@ const CHANNEL_BRIDGE_JOB_TYPE_SINGLE_POST = 'single_post';
 const CHANNEL_BRIDGE_JOB_TYPE_ALBUM_FINALIZE = 'album_finalize';
 const CHANNEL_BRIDGE_JOB_TYPE_ALBUM_PUBLISH = 'album_publish';
 const CHANNEL_BRIDGE_JOB_TYPE_RETRY_PUBLISH = 'retry_publish';
+const CHANNEL_BRIDGE_JOB_TYPE_VK_CLEANUP = 'vk_cleanup';
+
+const CHANNEL_BRIDGE_VK_CLEANUP_DELETE_DELAY_SECONDS = 1;
+const CHANNEL_BRIDGE_VK_CLEANUP_MAX_ATTEMPTS = 3;
 
 const CHANNEL_BRIDGE_REQUIRED_TABLES = [
   CHANNEL_BRIDGE_TABLE_SETTINGS,
@@ -69,6 +75,8 @@ const CHANNEL_BRIDGE_TABLES = [
   CHANNEL_BRIDGE_TABLE_TG_POST_PHOTOS,
   CHANNEL_BRIDGE_TABLE_TG_ALBUMS,
   CHANNEL_BRIDGE_TABLE_JOBS,
+  CHANNEL_BRIDGE_TABLE_VK_CLEANUP_TASKS,
+  CHANNEL_BRIDGE_TABLE_VK_CLEANUP_ITEMS,
 ];
 
 const CHANNEL_BRIDGE_ALLOWED_DO = [
@@ -86,6 +94,9 @@ const CHANNEL_BRIDGE_ALLOWED_DO = [
   'route_bind_code',
   'tg_probe',
   'max_probe',
+  'vk_cleanup_start',
+  'vk_cleanup_status',
+  'vk_wall_delete',
   'api_ingest',
   'api_tg_webhook',
   'api_tg_finalize',

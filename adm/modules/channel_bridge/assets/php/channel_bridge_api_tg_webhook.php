@@ -274,6 +274,10 @@ try {
       $sourceMessageId = trim((string)($payload['source_message_id'] ?? ''));
       $mediaGroupId = trim((string)($payload['tg_media_group_id'] ?? ''));
       $activeRoutes = channel_bridge_collect_routes_for_source($pdo, CHANNEL_BRIDGE_SOURCE_TG, $sourceChatId);
+      $routeDebug = channel_bridge_collect_route_debug_for_source($pdo, CHANNEL_BRIDGE_SOURCE_TG, $sourceChatId);
+      $activeRouteIds = array_values(array_map(static function ($route): int {
+        return (int)($route['id'] ?? 0);
+      }, $activeRoutes));
       if (!$activeRoutes) {
         $result = [
           'ok' => true,
@@ -297,6 +301,9 @@ try {
           'source_chat_id' => $sourceChatId,
           'source_message_id' => $sourceMessageId,
           'media_group_id' => $mediaGroupId,
+          'active_route_ids' => [],
+          'active_vk_route_ids' => (array)($routeDebug['active_vk_route_ids'] ?? []),
+          'vk_candidates' => (array)($routeDebug['vk_candidates'] ?? []),
         ];
       } else {
         $stateResult = channel_bridge_tg_state_process_webhook($pdo, $settings, $payload, $updateMeta);
@@ -366,6 +373,9 @@ try {
               'source_chat_id' => $sourceChatId,
               'source_message_id' => $sourceMessageId,
               'media_group_id' => $mediaGroupId,
+              'active_route_ids' => $activeRouteIds,
+              'active_vk_route_ids' => (array)($routeDebug['active_vk_route_ids'] ?? []),
+              'vk_candidates' => (array)($routeDebug['vk_candidates'] ?? []),
             ];
           }
 
@@ -418,6 +428,9 @@ try {
                 'source_chat_id' => $sourceChatId,
                 'source_message_id' => $sourceMessageId,
                 'media_group_id' => $mediaGroupId,
+                'active_route_ids' => $activeRouteIds,
+                'active_vk_route_ids' => (array)($routeDebug['active_vk_route_ids'] ?? []),
+                'vk_candidates' => (array)($routeDebug['vk_candidates'] ?? []),
               ];
             }
           } else {
@@ -480,6 +493,9 @@ try {
     'failed' => (int)($result['failed'] ?? 0),
     'targets' => (int)($result['targets'] ?? 0),
     'active_routes' => (int)($result['active_routes'] ?? 0),
+    'active_route_ids' => array_values(array_map('intval', (array)($result['active_route_ids'] ?? []))),
+    'active_vk_route_ids' => array_values(array_map('intval', (array)($result['active_vk_route_ids'] ?? []))),
+    'vk_candidates' => (array)($result['vk_candidates'] ?? []),
     'reason' => $reason,
     'job_type' => trim((string)($result['job_type'] ?? '')),
     'job_key' => trim((string)($result['job_key'] ?? '')),

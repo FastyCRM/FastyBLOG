@@ -10,6 +10,7 @@ if (!defined('ROOT_PATH')) exit;
 
 require_once __DIR__ . '/../../settings.php';
 require_once __DIR__ . '/channel_bridge_lib.php';
+require_once __DIR__ . '/channel_bridge_vk_cleanup.php';
 
 acl_guard(module_allowed_roles(CHANNEL_BRIDGE_MODULE_CODE));
 
@@ -22,10 +23,16 @@ if (!channel_bridge_can_manage($roles)) {
 $pdo = db();
 $settings = channel_bridge_settings_defaults();
 $linkSuffixRules = [];
+$vkCleanupRoutes = [];
+$vkCleanupDefaultRouteId = 0;
 
 try {
   $settings = channel_bridge_settings_get($pdo);
   $linkSuffixRules = channel_bridge_link_suffix_rules_list($pdo, false);
+  $vkCleanupRoutes = channel_bridge_vk_cleanup_routes_list($pdo, $settings);
+  if ($vkCleanupRoutes) {
+    $vkCleanupDefaultRouteId = (int)($vkCleanupRoutes[0]['id'] ?? 0);
+  }
 } catch (Throwable $e) {
   /**
    * При отсутствии таблиц модалка всё равно должна открываться,
@@ -38,6 +45,8 @@ $publicWebhookUrl = channel_bridge_webhook_endpoint_url(true);
 $autoApplyWebhookDefault = (trim((string)($settings['tg_bot_token'] ?? '')) !== '');
 $tgProbeUrl = url('/adm/index.php?m=' . CHANNEL_BRIDGE_MODULE_CODE . '&do=tg_probe');
 $maxProbeUrl = url('/adm/index.php?m=' . CHANNEL_BRIDGE_MODULE_CODE . '&do=max_probe');
+$vkCleanupStartUrl = url('/adm/index.php?m=' . CHANNEL_BRIDGE_MODULE_CODE . '&do=vk_cleanup_start');
+$vkCleanupStatusUrl = url('/adm/index.php?m=' . CHANNEL_BRIDGE_MODULE_CODE . '&do=vk_cleanup_status');
 
 ob_start();
 ?>
@@ -152,6 +161,67 @@ ob_start();
             <span class="field__label"><?= h(channel_bridge_t('channel_bridge.field_vk_api_version')) ?></span>
             <input class="select" type="text" name="vk_api_version" value="<?= h((string)($settings['vk_api_version'] ?? '5.199')) ?>">
           </label>
+
+          <div class="card" style="box-shadow:none; border-color:var(--border-soft); margin-top:4px;">
+            <div class="card__head">
+              <div class="card__title"><?= h(channel_bridge_t('channel_bridge.vk_delete_title')) ?></div>
+            </div>
+            <div class="card__body" style="display:grid; gap:10px;">
+              <div class="muted"><?= h(channel_bridge_t('channel_bridge.vk_delete_hint')) ?></div>
+
+              <label class="field field--stack">
+                <span class="field__label"><?= h(channel_bridge_t('channel_bridge.field_vk_delete_route')) ?></span>
+                <select class="select" name="vk_cleanup_route_id" data-ui-select="1">
+                  <option value=""><?= h(channel_bridge_t('channel_bridge.vk_delete_route_placeholder')) ?></option>
+                  <?php foreach ($vkCleanupRoutes as $vkRoute): ?>
+                    <?php
+                      $routeId = (int)($vkRoute['id'] ?? 0);
+                      $routeTitle = trim((string)($vkRoute['title'] ?? ''));
+                      $routeOwner = trim((string)($vkRoute['owner_id'] ?? ''));
+                      $routeEnabled = ((int)($vkRoute['enabled'] ?? 0) === 1) ? 'ON' : 'OFF';
+                    ?>
+                    <option value="<?= h((string)$routeId) ?>" <?= $routeId === $vkCleanupDefaultRouteId ? 'selected' : '' ?>>
+                      <?= h('#' . $routeId . ' ' . $routeTitle . ($routeOwner !== '' ? ' [' . $routeOwner . ']' : '') . ' ' . $routeEnabled) ?>
+                    </option>
+                  <?php endforeach; ?>
+                </select>
+              </label>
+
+              <label class="field field--stack">
+                <span class="field__label"><?= h(channel_bridge_t('channel_bridge.field_vk_delete_last_count')) ?></span>
+                <input class="select" type="text" name="vk_delete_last_count" value="10" inputmode="text" placeholder="10 или *">
+              </label>
+              <div class="muted"><?= h(channel_bridge_t('channel_bridge.field_vk_delete_last_count_hint')) ?></div>
+
+              <label class="field field--stack">
+                <span class="field__label"><?= h(channel_bridge_t('channel_bridge.field_vk_delete_link_substring')) ?></span>
+                <input class="select" type="text" name="vk_delete_link_substring" value="" placeholder="prfl.me / utm_source / promo123">
+              </label>
+              <div class="muted"><?= h(channel_bridge_t('channel_bridge.field_vk_delete_link_substring_hint')) ?></div>
+
+              <button class="btn"
+                      type="button"
+                      data-cb-vk-cleanup-start="1"
+                      data-cb-vk-cleanup-start-url="<?= h($vkCleanupStartUrl) ?>"
+                      data-cb-vk-cleanup-status-url="<?= h($vkCleanupStatusUrl) ?>"
+                      data-csrf="<?= h($csrf) ?>"
+                      data-confirm="<?= h(channel_bridge_t('channel_bridge.confirm_vk_delete_last_count')) ?>">
+                <?= h(channel_bridge_t('channel_bridge.btn_vk_delete_last_count')) ?>
+              </button>
+
+              <div class="tablewrap"
+                   data-cb-vk-cleanup-status="1"
+                   data-cb-vk-cleanup-status-url="<?= h($vkCleanupStatusUrl) ?>"
+                   data-cb-vk-cleanup-link-filter-label="<?= h(channel_bridge_t('channel_bridge.vk_delete_status_link_filter')) ?>"
+                   data-csrf="<?= h($csrf) ?>">
+                <?php if ($vkCleanupRoutes): ?>
+                  <div class="muted"><?= h(channel_bridge_t('channel_bridge.vk_delete_status_idle')) ?></div>
+                <?php else: ?>
+                  <div class="muted"><?= h(channel_bridge_t('channel_bridge.vk_delete_routes_empty')) ?></div>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

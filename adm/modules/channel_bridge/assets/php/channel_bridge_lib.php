@@ -4307,6 +4307,176 @@ if (!function_exists('channel_bridge_now')) {
   }
 
   /**
+   * channel_bridge_parse_ymd_date()
+   * Преобразует YYYY-MM-DD в unix timestamp начала/конца дня.
+   *
+   * @param string $raw
+   * @param bool $endOfDay
+   * @return int|null
+   */
+  function channel_bridge_parse_ymd_date(string $raw, bool $endOfDay = false): ?int
+  {
+    $raw = trim($raw);
+    if ($raw === '') {
+      return null;
+    }
+
+    $tzName = (string)date_default_timezone_get();
+    if ($tzName === '') {
+      $tzName = 'UTC';
+    }
+
+    try {
+      $tz = new DateTimeZone($tzName);
+    } catch (Throwable $e) {
+      $tz = new DateTimeZone('UTC');
+    }
+
+    $dt = DateTimeImmutable::createFromFormat('!Y-m-d', $raw, $tz);
+    $errors = DateTimeImmutable::getLastErrors();
+    if (!$dt || ($errors !== false && (((int)($errors['warning_count'] ?? 0) > 0) || ((int)($errors['error_count'] ?? 0) > 0)))) {
+      return null;
+    }
+
+    $dt = $endOfDay ? $dt->setTime(23, 59, 59) : $dt->setTime(0, 0, 0);
+    return $dt->getTimestamp();
+  }
+
+  /**
+   * channel_bridge_vk_wall_delete_latest()
+   * Сканирует верхушку стены VK и удаляет последние N постов.
+   *
+   * @param array<string,mixed> $settings
+   * @param int $ownerId
+   * @param int $limit
+   * @param bool $skipPinned
+   * @return array<string,mixed>
+   */
+  function channel_bridge_vk_wall_delete_latest(array $settings, int $ownerId, int $limit, bool $skipPinned = true): array
+  {
+    if ($ownerId === 0) {
+      return ['ok' => false, 'error' => 'VK_OWNER_ID_EMPTY'];
+    }
+    if ($limit <= 0) {
+      return ['ok' => false, 'error' => 'VK_DELETE_LIMIT_INVALID'];
+    }
+
+    $offset = 0;
+    $batchSize = 100;
+    $total = null;
+    $scanned = 0;
+    $matched = 0;
+    $deleted = 0;
+    $pinnedSkipped = 0;
+    $failedPosts = [];
+    $selectedPosts = [];
+    $stopReason = 'wall_end';
+
+    while (count($selectedPosts) < $limit) {
+      $wall = channel_bridge_vk_api_call($settings, 'wall.get', [
+        'owner_id' => $ownerId,
+        'offset' => $offset,
+        'count' => $batchSize,
+      ]);
+      if (($wall['ok'] ?? false) !== true) {
+        return [
+          'ok' => false,
+          'error' => (string)($wall['error'] ?? 'VK_WALL_GET_FAILED'),
+          'scanned' => $scanned,
+          'matched' => $matched,
+          'deleted' => $deleted,
+          'pinned_skipped' => $pinnedSkipped,
+          'failed_posts' => $failedPosts,
+          'raw' => $wall['raw'] ?? [],
+        ];
+      }
+
+      $response = is_array($wall['response'] ?? null) ? (array)$wall['response'] : [];
+      if ($total === null) {
+        $total = max(0, (int)($response['count'] ?? 0));
+      }
+
+      $items = isset($response['items']) && is_array($response['items']) ? array_values($response['items']) : [];
+      if (!$items) {
+        break;
+      }
+
+      foreach ($items as $item) {
+        if (!is_array($item)) {
+          continue;
+        }
+
+        $postId = (int)($item['id'] ?? 0);
+        $postTs = (int)($item['date'] ?? 0);
+        $isPinned = ((int)($item['is_pinned'] ?? 0) === 1);
+        if ($postId <= 0 || $postTs <= 0) {
+          continue;
+        }
+
+        if ($isPinned && $skipPinned) {
+          $pinnedSkipped++;
+          continue;
+        }
+
+        $scanned++;
+        $selectedPosts[] = [
+          'post_id' => $postId,
+          'date' => $postTs,
+        ];
+
+        if (count($selectedPosts) >= $limit) {
+          $stopReason = 'limit_reached';
+          break;
+        }
+      }
+
+      if (count($selectedPosts) >= $limit) {
+        break;
+      }
+
+      $offset += count($items);
+      if (count($items) < $batchSize) {
+        break;
+      }
+      if ($total !== null && $offset >= $total) {
+        break;
+      }
+    }
+
+    $matched = count($selectedPosts);
+    foreach ($selectedPosts as $post) {
+      $delete = channel_bridge_vk_api_call($settings, 'wall.delete', [
+        'owner_id' => $ownerId,
+        'post_id' => (int)($post['post_id'] ?? 0),
+      ]);
+      if (($delete['ok'] ?? false) === true) {
+        $deleted++;
+        continue;
+      }
+
+      $failedPosts[] = [
+        'post_id' => (int)($post['post_id'] ?? 0),
+        'date' => (int)($post['date'] ?? 0),
+        'error' => (string)($delete['error'] ?? 'VK_WALL_DELETE_FAILED'),
+      ];
+    }
+
+    return [
+      'ok' => true,
+      'owner_id' => $ownerId,
+      'requested' => $limit,
+      'scanned' => $scanned,
+      'matched' => $matched,
+      'deleted' => $deleted,
+      'failed' => count($failedPosts),
+      'failed_posts' => $failedPosts,
+      'pinned_skipped' => $pinnedSkipped,
+      'stop_reason' => $stopReason,
+      'total' => $total,
+    ];
+  }
+
+  /**
    * channel_bridge_vk_make_photo_attachment_from_local_file()
    * Загружает локальное изображение в VK и возвращает attachment для wall.post.
    *
@@ -6683,6 +6853,94 @@ if (!function_exists('channel_bridge_now')) {
 
     $rows = $st->fetchAll(PDO::FETCH_ASSOC);
     return is_array($rows) ? $rows : [];
+  }
+
+  /**
+   * channel_bridge_collect_route_debug_for_source()
+   * Возвращает короткую диагностику по маршрутам для source, чтобы понимать,
+   * почему нужный VK-маршрут не попал в active_routes.
+   *
+   * @param PDO $pdo
+   * @param string $sourcePlatform
+   * @param string $sourceChatId
+   * @return array<string,mixed>
+   */
+  function channel_bridge_collect_route_debug_for_source(PDO $pdo, string $sourcePlatform, string $sourceChatId): array
+  {
+    channel_bridge_require_schema($pdo);
+
+    $sourcePlatform = channel_bridge_norm_platform($sourcePlatform);
+    $sourceChatId = channel_bridge_norm_chat_id($sourceChatId);
+    if ($sourcePlatform === '' || $sourceChatId === '') {
+      return [
+        'source_platform' => $sourcePlatform,
+        'source_chat_id' => $sourceChatId,
+        'active_route_ids' => [],
+        'active_vk_route_ids' => [],
+        'vk_candidates' => [],
+      ];
+    }
+
+    $st = $pdo->prepare("
+      SELECT
+        id,
+        title,
+        source_platform,
+        source_chat_id,
+        target_platform,
+        target_chat_id,
+        enabled
+      FROM " . CHANNEL_BRIDGE_TABLE_ROUTES . "
+      WHERE source_platform = :source_platform
+      ORDER BY id ASC
+    ");
+    $st->execute([
+      ':source_platform' => $sourcePlatform,
+    ]);
+
+    $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+    if (!is_array($rows)) {
+      $rows = [];
+    }
+
+    $activeRouteIds = [];
+    $activeVkRouteIds = [];
+    $vkCandidates = [];
+
+    foreach ($rows as $row) {
+      $routeId = (int)($row['id'] ?? 0);
+      $enabled = ((int)($row['enabled'] ?? 0) === 1) ? 1 : 0;
+      $routeSourceChatId = channel_bridge_norm_chat_id((string)($row['source_chat_id'] ?? ''));
+      $targetPlatform = channel_bridge_norm_platform((string)($row['target_platform'] ?? ''));
+      $sourceMatch = ($routeSourceChatId !== '' && $routeSourceChatId === $sourceChatId) ? 1 : 0;
+      $targetIsVk = ($targetPlatform === CHANNEL_BRIDGE_TARGET_VK) ? 1 : 0;
+
+      if ($enabled === 1 && $sourceMatch === 1) {
+        $activeRouteIds[] = $routeId;
+        if ($targetIsVk === 1) {
+          $activeVkRouteIds[] = $routeId;
+        }
+      }
+
+      if ($targetIsVk === 1) {
+        $vkCandidates[] = [
+          'id' => $routeId,
+          'title' => trim((string)($row['title'] ?? '')),
+          'enabled' => $enabled,
+          'source_chat_id' => $routeSourceChatId,
+          'source_match' => $sourceMatch,
+          'target_chat_id' => channel_bridge_norm_chat_id((string)($row['target_chat_id'] ?? '')),
+        ];
+      }
+    }
+
+    return [
+      'source_platform' => $sourcePlatform,
+      'source_chat_id' => $sourceChatId,
+      'active_route_ids' => array_values($activeRouteIds),
+      'active_vk_route_ids' => array_values($activeVkRouteIds),
+      'vk_candidates' => array_slice(array_values($vkCandidates), 0, 12),
+    ];
   }
 
   /**

@@ -35,9 +35,161 @@
 
         if (window.App && window.App.modal && typeof window.App.modal.open === 'function') {
           window.App.modal.open(title, html);
+          window.setTimeout(function () {
+            document.querySelectorAll('[data-cb-vk-cleanup-status="1"]').forEach(function (box) {
+              cb_request_vk_cleanup_status(box, false);
+            });
+          }, 0);
         }
       })
       .catch(function () {});
+  }
+
+  function cb_render_vk_cleanup_status(box, task) {
+    if (!box) return;
+    if (!task) {
+      box.innerHTML = '<div class="muted">No cleanup task yet</div>';
+      return;
+    }
+
+    var percent = Math.max(0, Math.min(100, Number(task.percent || 0)));
+    var recent = Array.isArray(task.recent_items) ? task.recent_items : [];
+    var logs = Array.isArray(task.log_lines) ? task.log_lines : [];
+    var html = '';
+    html += '<div style="display:grid; gap:8px;">';
+    html += '<div><strong>' + cb_esc(task.route_title || '') + '</strong> <span class="muted">[' + cb_esc(task.owner_id || '') + ']</span></div>';
+    if (task.status_text) {
+      html += '<div><strong>' + cb_esc(task.status_text || '') + '</strong></div>';
+    }
+    html += '<div class="muted">status: <strong>' + cb_esc(task.status || '') + '</strong>, requested=' + cb_esc(task.requested_display || task.requested_count || 0) + ', found=' + cb_esc(task.total_count || 0) + '</div>';
+    if (task.link_substring) {
+      html += '<div class="muted">' + cb_esc(box.dataset.cbVkCleanupLinkFilterLabel || 'Link filter') + ': <code>' + cb_esc(task.link_substring || '') + '</code></div>';
+    }
+    if (Number(task.current_post_id || 0) > 0) {
+      html += '<div class="muted">current post: <code>' + cb_esc(task.current_post_id || 0) + '</code> #' + cb_esc(task.current_sort || 0) + '</div>';
+    }
+    html += '<div style="height:8px; background:#e5e7eb; border-radius:999px; overflow:hidden;"><div style="height:100%; width:' + percent + '%; background:#0ea5e9;"></div></div>';
+    html += '<div class="muted">progress: <strong>' + percent + '%</strong> | deleted=' + cb_esc(task.deleted_count || 0) + ', failed=' + cb_esc(task.failed_count || 0) + ', pending=' + cb_esc(task.pending_count || 0) + ', retries=' + cb_esc(task.retries_count || 0) + '</div>';
+    html += '<div class="muted">scanned=' + cb_esc(task.scanned_count || 0) + ', wall=' + cb_esc(task.wall_total || 0) + ', pinned skipped=' + cb_esc(task.pinned_skipped || 0) + ', started=' + cb_esc(task.started_at || '') + ', updated=' + cb_esc(task.updated_at || '') + '</div>';
+    if (task.last_error) {
+      html += '<div class="muted">last error: ' + cb_esc(task.last_error) + '</div>';
+    }
+    if (logs.length) {
+      html += '<div class="muted">activity:</div>';
+      html += '<pre class="mono" style="margin:0; white-space:pre-wrap; background:#f8fafc; border:1px solid #e5e7eb; border-radius:8px; padding:10px; max-height:180px; overflow:auto;">' + cb_esc(logs.join('\n')) + '</pre>';
+    }
+    if (recent.length) {
+      html += '<table class="table" style="margin-top:4px;">';
+      html += '<thead><tr><th>#</th><th>post_id</th><th>status</th><th>attempts</th><th>last_error</th></tr></thead><tbody>';
+      recent.forEach(function (row) {
+        html += '<tr>';
+        html += '<td>' + cb_esc(row.sort || '') + '</td>';
+        html += '<td class="mono">' + cb_esc(row.post_id || '') + '</td>';
+        html += '<td>' + cb_esc(row.status || '') + '</td>';
+        html += '<td>' + cb_esc(row.attempts || 0) + '</td>';
+        html += '<td>' + cb_esc(row.last_error || '') + '</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+
+    box.innerHTML = html;
+  }
+
+  function cb_request_vk_cleanup_status(box, quiet) {
+    if (!box || box.dataset.cbVkCleanupBusy === '1') return;
+
+    var url = (box.getAttribute('data-cb-vk-cleanup-status-url') || '').trim();
+    var csrf = (box.getAttribute('data-csrf') || '').trim();
+    if (!url || !csrf) return;
+
+    var root = box.closest('.card__body') || document;
+    var routeInput = root.querySelector('[name="vk_cleanup_route_id"]');
+    var routeId = routeInput ? String(routeInput.value || '').trim() : '';
+    if (!routeId) {
+      return;
+    }
+
+    box.dataset.cbVkCleanupBusy = '1';
+    if (!quiet) {
+      box.innerHTML = '<div class="muted">Loading...</div>';
+    }
+
+    fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+      },
+      body: 'csrf=' + encodeURIComponent(csrf) + '&vk_cleanup_route_id=' + encodeURIComponent(routeId)
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (payload) {
+        box.dataset.cbVkCleanupBusy = '0';
+        box.dataset.cbVkCleanupLastTs = String(Date.now());
+        if (!payload || payload.ok !== true || !payload.data) {
+          var err = (payload && (payload.msg || payload.message || payload.error)) ? String(payload.msg || payload.message || payload.error) : 'Request failed';
+          box.innerHTML = '<div class="muted">' + cb_esc(err) + '</div>';
+          return;
+        }
+        cb_render_vk_cleanup_status(box, payload.data.task || null);
+      })
+      .catch(function (e) {
+        box.dataset.cbVkCleanupBusy = '0';
+        box.dataset.cbVkCleanupLastTs = String(Date.now());
+        box.innerHTML = '<div class="muted">' + cb_esc((e && e.message) ? e.message : 'Request failed') + '</div>';
+      });
+  }
+
+  function cb_start_vk_cleanup(btn) {
+    if (!btn) return;
+    var url = (btn.getAttribute('data-cb-vk-cleanup-start-url') || '').trim();
+    var confirmText = (btn.getAttribute('data-confirm') || '').trim();
+    var csrf = (btn.getAttribute('data-csrf') || '').trim();
+    if (!url || !csrf) return;
+    if (confirmText && !window.confirm(confirmText)) return;
+
+    var root = btn.closest('.card__body') || document;
+    var routeInput = root.querySelector('[name="vk_cleanup_route_id"]');
+    var countInput = root.querySelector('[name="vk_delete_last_count"]');
+    var linkSubstringInput = root.querySelector('[name="vk_delete_link_substring"]');
+    var box = root.querySelector('[data-cb-vk-cleanup-status="1"]');
+    var routeId = routeInput ? String(routeInput.value || '').trim() : '';
+    var count = countInput ? String(countInput.value || '').trim() : '';
+    var linkSubstring = linkSubstringInput ? String(linkSubstringInput.value || '').trim() : '';
+
+    if (!box) return;
+    box.innerHTML = '<div class="muted">Starting...</div>';
+    btn.disabled = true;
+
+    fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+      },
+      body: 'csrf=' + encodeURIComponent(csrf)
+        + '&vk_cleanup_route_id=' + encodeURIComponent(routeId)
+        + '&vk_delete_last_count=' + encodeURIComponent(count)
+        + '&vk_delete_link_substring=' + encodeURIComponent(linkSubstring)
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (payload) {
+        btn.disabled = false;
+        box.dataset.cbVkCleanupLastTs = '0';
+        if (!payload || payload.ok !== true || !payload.data) {
+          var err = (payload && (payload.msg || payload.message || payload.error)) ? String(payload.msg || payload.message || payload.error) : 'Request failed';
+          box.innerHTML = '<div class="muted">' + cb_esc(err) + '</div>';
+          return;
+        }
+        cb_render_vk_cleanup_status(box, payload.data.task || null);
+        cb_request_vk_cleanup_status(box, true);
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        box.innerHTML = '<div class="muted">' + cb_esc((e && e.message) ? e.message : 'Request failed') + '</div>';
+      });
   }
 
   function cb_render_max_probe(box, data) {
@@ -455,6 +607,13 @@
       return;
     }
 
+    var vkCleanupBtn = target.closest('[data-cb-vk-cleanup-start="1"]');
+    if (vkCleanupBtn) {
+      e.preventDefault();
+      cb_start_vk_cleanup(vkCleanupBtn);
+      return;
+    }
+
     var copyBtn = target.closest('[data-cb-copy-chat-id]');
     if (copyBtn) {
       e.preventDefault();
@@ -503,4 +662,26 @@
     var url = btn.getAttribute('data-cb-modal') || '';
     cb_open_modal(url);
   });
+
+  document.addEventListener('change', function (e) {
+    var target = e.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.matches('[name="vk_cleanup_route_id"]')) {
+      var root = target.closest('.card__body') || document;
+      var box = root.querySelector('[data-cb-vk-cleanup-status="1"]');
+      if (box) {
+        box.dataset.cbVkCleanupLastTs = '0';
+        cb_request_vk_cleanup_status(box, false);
+      }
+    }
+  });
+
+  window.setInterval(function () {
+    document.querySelectorAll('[data-cb-vk-cleanup-status="1"]').forEach(function (box) {
+      if (!(box instanceof HTMLElement)) return;
+      var lastTs = parseInt(box.dataset.cbVkCleanupLastTs || '0', 10);
+      if (Date.now() - lastTs < 1800) return;
+      cb_request_vk_cleanup_status(box, true);
+    });
+  }, 2000);
 })();

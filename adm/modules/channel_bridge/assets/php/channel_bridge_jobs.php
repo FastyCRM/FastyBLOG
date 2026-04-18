@@ -11,6 +11,8 @@ declare(strict_types=1);
 
 if (!defined('ROOT_PATH')) exit;
 
+require_once __DIR__ . '/channel_bridge_vk_cleanup.php';
+
 if (!function_exists('channel_bridge_jobs_table_available')) {
   /**
    * Checks whether queue table exists.
@@ -799,6 +801,15 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
       return ['status' => 'done', 'reason' => 'album_publish_enqueued'];
     }
 
+    if ($jobType === CHANNEL_BRIDGE_JOB_TYPE_VK_CLEANUP) {
+      $taskId = (int)($payload['task_id'] ?? 0);
+      if ($taskId <= 0) {
+        return ['status' => 'failed', 'reason' => 'bad_meta', 'error' => 'cleanup task_id required'];
+      }
+
+      return channel_bridge_vk_cleanup_handle_task_job($pdo, $settings, $taskId);
+    }
+
     if (!in_array($jobType, [CHANNEL_BRIDGE_JOB_TYPE_ALBUM_PUBLISH, CHANNEL_BRIDGE_JOB_TYPE_RETRY_PUBLISH], true)) {
       return ['status' => 'failed', 'reason' => 'job_type_not_supported', 'error' => 'unsupported job type'];
     }
@@ -934,6 +945,9 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
         $attempt = (int)($job['attempts'] ?? 0) + 1;
         if ($attempt > CHANNEL_BRIDGE_JOBS_MAX_ATTEMPTS) {
           $payload = is_array($job['payload'] ?? null) ? (array)$job['payload'] : [];
+          if ($jobType === CHANNEL_BRIDGE_JOB_TYPE_VK_CLEANUP) {
+            channel_bridge_vk_cleanup_abort_task_from_payload($pdo, $payload, ($error !== '' ? $error : 'retry_limit_reached'));
+          }
           $chatId = channel_bridge_norm_chat_id((string)($payload['source_chat_id'] ?? ''));
           $groupId = trim((string)($payload['media_group_id'] ?? ''));
           $token = trim((string)($payload['dispatch_token'] ?? ''));
@@ -953,6 +967,10 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
         continue;
       }
 
+      if ($jobType === CHANNEL_BRIDGE_JOB_TYPE_VK_CLEANUP) {
+        $payload = is_array($job['payload'] ?? null) ? (array)$job['payload'] : [];
+        channel_bridge_vk_cleanup_abort_task_from_payload($pdo, $payload, ($error !== '' ? $error : 'job_failed'));
+      }
       channel_bridge_jobs_mark_failed($pdo, $jobId, ($error !== '' ? $error : 'job_failed'));
       $failed++;
       channel_bridge_jobs_audit('failed', 'error', ['job_id' => $jobId, 'job_type' => $jobType, 'job_key' => $jobKey, 'reason' => $reason, 'error' => $error]);
@@ -1016,6 +1034,10 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
 
       if ($attempts >= CHANNEL_BRIDGE_JOBS_MAX_ATTEMPTS) {
         $jobType = trim((string)($row['job_type'] ?? ''));
+        if ($jobType === CHANNEL_BRIDGE_JOB_TYPE_VK_CLEANUP) {
+          $payload = channel_bridge_jobs_payload_decode((string)($row['payload_json'] ?? '{}'));
+          channel_bridge_vk_cleanup_abort_task_from_payload($pdo, $payload, 'worker_stale_timeout');
+        }
         if (in_array($jobType, [CHANNEL_BRIDGE_JOB_TYPE_ALBUM_PUBLISH, CHANNEL_BRIDGE_JOB_TYPE_RETRY_PUBLISH], true)) {
           $payload = channel_bridge_jobs_payload_decode((string)($row['payload_json'] ?? '{}'));
           $chatId = channel_bridge_norm_chat_id((string)($payload['source_chat_id'] ?? ''));
@@ -1154,6 +1176,11 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
     $releasedAlbums = 0;
     foreach ($rows as $row) {
       $jobType = trim((string)($row['job_type'] ?? ''));
+      if ($jobType === CHANNEL_BRIDGE_JOB_TYPE_VK_CLEANUP) {
+        $payload = channel_bridge_jobs_payload_decode((string)($row['payload_json'] ?? '{}'));
+        channel_bridge_vk_cleanup_abort_task_from_payload($pdo, $payload, $errorText);
+        continue;
+      }
       if (!in_array($jobType, [CHANNEL_BRIDGE_JOB_TYPE_ALBUM_PUBLISH, CHANNEL_BRIDGE_JOB_TYPE_RETRY_PUBLISH], true)) {
         continue;
       }
