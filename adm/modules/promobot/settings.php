@@ -101,8 +101,12 @@ const PROMOBOT_ALLOWED_DO = [
   'bot_toggle',
   'bot_delete',
   'bot_webhook_set',
+  'bot_max_webhook_set',
+  'bot_max_webhook_info',
 
   'bind_code_generate',
+  'channel_probe',
+  'channel_attach',
   'channel_toggle',
   'channel_unbind',
 

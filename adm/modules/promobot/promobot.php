@@ -55,6 +55,15 @@ if ($selectedBotId <= 0 && $bots) {
 }
 
 $selectedBot = $selectedBotId > 0 ? promobot_bot_get($pdo, $selectedBotId) : [];
+$selectedPlatform = strtolower(trim((string)($selectedBot['platform'] ?? PROMOBOT_PLATFORM_TG)));
+if ($selectedPlatform !== PROMOBOT_PLATFORM_MAX) {
+  $selectedPlatform = PROMOBOT_PLATFORM_TG;
+}
+
+$selectedPromoOwner = $selectedBotId > 0 ? promobot_bot_promo_owner($pdo, $selectedBotId) : [];
+$selectedPromoOwnerId = (int)($selectedPromoOwner['id'] ?? 0);
+if ($selectedPromoOwnerId <= 0) $selectedPromoOwnerId = $selectedBotId;
+$isSharedPromoList = ($selectedBotId > 0 && $selectedPromoOwnerId > 0 && $selectedPromoOwnerId !== $selectedBotId);
 
 $promos = $selectedBotId > 0 ? promobot_promos_list($pdo, $selectedBotId) : [];
 $channels = $selectedBotId > 0 ? promobot_channels_list($pdo, $selectedBotId) : [];
@@ -134,6 +143,7 @@ $usersCandidates = ($selectedBotId > 0 && $isManage) ? promobot_users_attach_can
                   <th><?= h(promobot_t('promobot.col_name')) ?></th>
                   <th><?= h(promobot_t('promobot.col_platform')) ?></th>
                   <th><?= h(promobot_t('promobot.col_status')) ?></th>
+                  <th><?= h(promobot_t('promobot.col_promo_source')) ?></th>
                   <th><?= h(promobot_t('promobot.col_webhook')) ?></th>
                   <th class="t-right" style="width:200px"></th>
                 </tr>
@@ -146,6 +156,18 @@ $usersCandidates = ($selectedBotId > 0 && $isManage) ? promobot_users_attach_can
                     $isTg = ($platform === PROMOBOT_PLATFORM_TG);
                     $enabled = ((int)($b['enabled'] ?? 0) === 1);
                     $wh = promobot_bot_webhook_url($bid, $platform, false);
+                    $promoSourceBotId = (int)($b['promo_source_bot_id'] ?? 0);
+                    $promoSourceLabel = promobot_t('promobot.promo_source_self');
+                    if ($promoSourceBotId > 0) {
+                      $promoSourceBot = promobot_bot_get($pdo, $promoSourceBotId);
+                      if ($promoSourceBot) {
+                        $promoSourceName = trim((string)($promoSourceBot['name'] ?? ''));
+                        if ($promoSourceName === '') $promoSourceName = '#' . $promoSourceBotId;
+                        $promoSourceLabel = $promoSourceName;
+                      } else {
+                        $promoSourceLabel = '#' . $promoSourceBotId;
+                      }
+                    }
                   ?>
                   <tr>
                     <td>
@@ -153,6 +175,7 @@ $usersCandidates = ($selectedBotId > 0 && $isManage) ? promobot_users_attach_can
                     </td>
                     <td><?= h($isTg ? promobot_t('promobot.platform_tg') : promobot_t('promobot.platform_max')) ?></td>
                     <td><?= h($enabled ? promobot_t('promobot.status_on') : promobot_t('promobot.status_off')) ?></td>
+                    <td><?= h($promoSourceLabel) ?></td>
                     <td class="mono"><code><?= h($wh) ?></code></td>
                     <td class="t-right">
                       <div class="table__actions">
@@ -181,6 +204,26 @@ $usersCandidates = ($selectedBotId > 0 && $isManage) ? promobot_users_attach_can
                             <button class="iconbtn iconbtn--sm" type="submit"
                                     aria-label="<?= h(promobot_t('promobot.action_webhook_set')) ?>"
                                     title="<?= h(promobot_t('promobot.action_webhook_set')) ?>">
+                              <i class="bi bi-plug"></i>
+                            </button>
+                          </form>
+                        <?php else: ?>
+                          <form method="post" action="<?= h(url('/adm/index.php?m=' . PROMOBOT_MODULE_CODE . '&do=bot_max_webhook_info')) ?>" class="table__actionform">
+                            <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+                            <input type="hidden" name="id" value="<?= (int)$bid ?>">
+                            <button class="iconbtn iconbtn--sm" type="submit"
+                                    aria-label="<?= h(promobot_t('promobot.action_max_webhook_info')) ?>"
+                                    title="<?= h(promobot_t('promobot.action_max_webhook_info')) ?>">
+                              <i class="bi bi-activity"></i>
+                            </button>
+                          </form>
+
+                          <form method="post" action="<?= h(url('/adm/index.php?m=' . PROMOBOT_MODULE_CODE . '&do=bot_max_webhook_set')) ?>" class="table__actionform">
+                            <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+                            <input type="hidden" name="id" value="<?= (int)$bid ?>">
+                            <button class="iconbtn iconbtn--sm" type="submit"
+                                    aria-label="<?= h(promobot_t('promobot.action_max_webhook_set')) ?>"
+                                    title="<?= h(promobot_t('promobot.action_max_webhook_set')) ?>">
                               <i class="bi bi-plug"></i>
                             </button>
                           </form>
@@ -219,6 +262,19 @@ $usersCandidates = ($selectedBotId > 0 && $isManage) ? promobot_users_attach_can
           </div>
           <?php if ($isManage): ?>
             <div class="card__head-actions">
+              <button class="btn"
+                      type="button"
+                      data-promobot-channel-probe="1"
+                      data-promobot-probe-url="<?= h(url('/adm/index.php?m=' . PROMOBOT_MODULE_CODE . '&do=channel_probe')) ?>"
+                      data-promobot-attach-url="<?= h(url('/adm/index.php?m=' . PROMOBOT_MODULE_CODE . '&do=channel_attach')) ?>"
+                      data-csrf="<?= h($csrf) ?>"
+                      data-bot-id="<?= (int)$selectedBotId ?>"
+                      data-platform="<?= h($selectedPlatform) ?>"
+                      data-label-add="<?= h(promobot_t('promobot.action_channel_add')) ?>"
+                      data-label-added="<?= h(promobot_t('promobot.channels_probe_added')) ?>"
+                      data-label-loading="<?= h(promobot_t('promobot.channels_probe_loading')) ?>">
+                <?= h(promobot_t('promobot.action_channel_probe')) ?>
+              </button>
               <form method="post" action="<?= h(url('/adm/index.php?m=' . PROMOBOT_MODULE_CODE . '&do=bind_code_generate')) ?>">
                 <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
                 <input type="hidden" name="bot_id" value="<?= (int)$selectedBotId ?>">
@@ -229,6 +285,16 @@ $usersCandidates = ($selectedBotId > 0 && $isManage) ? promobot_users_attach_can
         </div>
 
         <div class="card__body">
+          <?php if ($isManage): ?>
+            <div style="display:grid; gap:8px; margin-bottom:12px;">
+              <div class="muted">
+                <?= h($selectedPlatform === PROMOBOT_PLATFORM_MAX ? promobot_t('promobot.channels_probe_hint_max') : promobot_t('promobot.channels_probe_hint_tg')) ?>
+              </div>
+              <div class="tablewrap" data-promobot-channel-probe-result="1">
+                <div class="muted"><?= h(promobot_t('promobot.channels_probe_idle')) ?></div>
+              </div>
+            </div>
+          <?php endif; ?>
           <div class="tablewrap">
             <table class="table table--modules">
               <thead>
@@ -304,7 +370,17 @@ $usersCandidates = ($selectedBotId > 0 && $isManage) ? promobot_users_attach_can
         <div class="card__head card__head--row">
           <div class="card__head-main">
             <div class="card__title"><?= h(promobot_t('promobot.section_promos')) ?></div>
-            <div class="card__hint muted"><?= h(promobot_t('promobot.promos_hint')) ?></div>
+            <div class="card__hint muted">
+              <?= h(promobot_t('promobot.promos_hint')) ?>
+              <?php if ($isSharedPromoList): ?>
+                <?php
+                  $ownerName = trim((string)($selectedPromoOwner['name'] ?? ''));
+                  if ($ownerName === '') $ownerName = '#' . $selectedPromoOwnerId;
+                ?>
+                <br>
+                <?= h(promobot_t('promobot.promos_shared_hint', ['bot' => $ownerName])) ?>
+              <?php endif; ?>
+            </div>
           </div>
           <div class="card__head-actions">
             <button class="btn btn--accent" type="button"
@@ -372,7 +448,7 @@ $usersCandidates = ($selectedBotId > 0 && $isManage) ? promobot_users_attach_can
                         <div class="table__actions">
                           <button class="iconbtn iconbtn--sm" type="button"
                                   data-promobot-open-modal="1"
-                                  data-promobot-modal="<?= h(url('/adm/index.php?m=' . PROMOBOT_MODULE_CODE . '&do=modal_promo_update&id=' . $pid)) ?>"
+                                  data-promobot-modal="<?= h(url('/adm/index.php?m=' . PROMOBOT_MODULE_CODE . '&do=modal_promo_update&id=' . $pid . '&bot_id=' . $selectedBotId)) ?>"
                                   aria-label="<?= h(promobot_t('promobot.action_edit')) ?>"
                                   title="<?= h(promobot_t('promobot.action_edit')) ?>">
                             <i class="bi bi-pencil"></i>
@@ -381,6 +457,7 @@ $usersCandidates = ($selectedBotId > 0 && $isManage) ? promobot_users_attach_can
                           <form method="post" action="<?= h(url('/adm/index.php?m=' . PROMOBOT_MODULE_CODE . '&do=promo_toggle')) ?>" class="table__actionform">
                             <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
                             <input type="hidden" name="id" value="<?= (int)$pid ?>">
+                            <input type="hidden" name="bot_id" value="<?= (int)$selectedBotId ?>">
                             <button class="iconbtn iconbtn--sm" type="submit"
                                     aria-label="<?= h($enabled ? promobot_t('promobot.action_disable') : promobot_t('promobot.action_enable')) ?>"
                                     title="<?= h($enabled ? promobot_t('promobot.action_disable') : promobot_t('promobot.action_enable')) ?>">
@@ -391,6 +468,7 @@ $usersCandidates = ($selectedBotId > 0 && $isManage) ? promobot_users_attach_can
                           <form method="post" action="<?= h(url('/adm/index.php?m=' . PROMOBOT_MODULE_CODE . '&do=promo_delete')) ?>" class="table__actionform" onsubmit="return confirm('<?= h(promobot_t('promobot.confirm_promo_delete')) ?>');">
                             <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
                             <input type="hidden" name="id" value="<?= (int)$pid ?>">
+                            <input type="hidden" name="bot_id" value="<?= (int)$selectedBotId ?>">
                             <button class="iconbtn iconbtn--sm" type="submit"
                                     aria-label="<?= h(promobot_t('promobot.action_delete')) ?>"
                                     title="<?= h(promobot_t('promobot.action_delete')) ?>">

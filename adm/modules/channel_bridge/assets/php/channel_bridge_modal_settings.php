@@ -111,6 +111,12 @@ ob_start();
           </label>
           <div class="muted" style="margin-top:-4px;"><?= h(channel_bridge_t('channel_bridge.field_apply_webhook_hint')) ?></div>
 
+          <label class="field" style="display:flex; gap:8px; align-items:center;">
+            <input type="checkbox" name="webhook_probe_enabled" value="1" <?= ((int)($settings['webhook_probe_enabled'] ?? 1) === 1) ? 'checked' : '' ?>>
+            <span><?= h(channel_bridge_t('channel_bridge.field_webhook_probe_enabled')) ?></span>
+          </label>
+          <div class="muted" style="margin-top:-4px;"><?= h(channel_bridge_t('channel_bridge.field_webhook_probe_enabled_hint')) ?></div>
+
           <div style="display:grid; gap:8px; margin-top:4px;">
             <button class="btn"
                     type="submit"

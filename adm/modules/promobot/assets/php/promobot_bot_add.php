@@ -29,6 +29,7 @@ if (!promobot_is_manage_role($roles)) {
 $name = trim((string)($_POST['name'] ?? ''));
 $platform = strtolower(trim((string)($_POST['platform'] ?? PROMOBOT_PLATFORM_TG)));
 $enabled = ((int)($_POST['enabled'] ?? 0) === 1) ? 1 : 0;
+$promoSourceBotId = (int)($_POST['promo_source_bot_id'] ?? 0);
 
 if ($platform !== PROMOBOT_PLATFORM_MAX) $platform = PROMOBOT_PLATFORM_TG;
 
@@ -41,15 +42,24 @@ $pdo = db();
 $uid = (int)(function_exists('auth_user_id') ? auth_user_id() : 0);
 $role = function_exists('auth_user_role') ? (string)auth_user_role() : '';
 
+if ($promoSourceBotId > 0) {
+  $sourceBot = promobot_bot_get($pdo, $promoSourceBotId);
+  if (!$sourceBot) {
+    flash(promobot_t('promobot.flash_promo_source_not_found'), 'danger', 1);
+    redirect_return('/adm/index.php?m=' . PROMOBOT_MODULE_CODE);
+  }
+}
+
 $st = $pdo->prepare("\n  INSERT INTO " . PROMOBOT_TABLE_BOTS . "
-    (name, platform, enabled, created_by, updated_by)
+    (name, platform, enabled, promo_source_bot_id, created_by, updated_by)
   VALUES
-    (:name, :platform, :enabled, :created_by, :updated_by)
+    (:name, :platform, :enabled, :promo_source_bot_id, :created_by, :updated_by)
 ");
 $st->execute([
   ':name' => $name,
   ':platform' => $platform,
   ':enabled' => $enabled,
+  ':promo_source_bot_id' => $promoSourceBotId > 0 ? $promoSourceBotId : 0,
   ':created_by' => $uid,
   ':updated_by' => $uid,
 ]);
@@ -70,6 +80,7 @@ if ($uid > 0 && !promobot_is_manage_role($roles)) {
 audit_log(PROMOBOT_MODULE_CODE, 'bot_add', 'info', [
   'bot_id' => $botId,
   'platform' => $platform,
+  'promo_source_bot_id' => $promoSourceBotId > 0 ? $promoSourceBotId : 0,
 ], PROMOBOT_MODULE_CODE, null, $uid, $role);
 
 flash(promobot_t('promobot.flash_bot_added'), 'ok');

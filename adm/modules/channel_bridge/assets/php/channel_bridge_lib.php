@@ -1604,9 +1604,10 @@ if (!function_exists('channel_bridge_now')) {
    * @param string $url
    * @param array<int,string> $headers
    * @param float $timeoutSeconds
+   * @param int $readResponseMs
    * @return array<string,mixed>
    */
-  function channel_bridge_http_fire_and_forget(string $url, array $headers = [], float $timeoutSeconds = 1.0): array
+  function channel_bridge_http_fire_and_forget(string $url, array $headers = [], float $timeoutSeconds = 1.0, int $readResponseMs = 0): array
   {
     $url = trim($url);
     if ($url === '') {
@@ -1692,11 +1693,30 @@ if (!function_exists('channel_bridge_now')) {
 
     $raw = implode("\r\n", $requestHeaders) . "\r\n\r\n";
     $written = @fwrite($fp, $raw);
+    $responseLine = '';
+    $responsePreview = '';
+    $readResponseMs = max(0, min(1000, $readResponseMs));
+    if ($written !== false && $readResponseMs > 0) {
+      $sec = (int)floor($readResponseMs / 1000);
+      $usec = max(1, ($readResponseMs % 1000) * 1000);
+      @stream_set_blocking($fp, true);
+      @stream_set_timeout($fp, $sec, $usec);
+      $chunk = @fread($fp, 512);
+      if (is_string($chunk) && $chunk !== '') {
+        $responsePreview = trim(preg_replace('/\s+/', ' ', $chunk) ?? '');
+        $firstLine = strtok($chunk, "\r\n");
+        if (is_string($firstLine)) {
+          $responseLine = trim($firstLine);
+        }
+      }
+    }
     @fclose($fp);
 
     return [
       'ok' => ($written !== false),
       'bytes' => ($written === false ? 0 : (int)$written),
+      'response_line' => $responseLine,
+      'response_preview' => $responsePreview,
     ];
   }
 
@@ -2596,6 +2616,7 @@ if (!function_exists('channel_bridge_now')) {
       'max_api_key' => '',
       'max_base_url' => 'https://platform-api.max.ru',
       'max_send_path' => '/messages',
+      'webhook_probe_enabled' => 1,
     ];
   }
 
@@ -2793,6 +2814,8 @@ if (!function_exists('channel_bridge_now')) {
     channel_bridge_require_schema($pdo);
 
     $defaults = channel_bridge_settings_defaults();
+    $hasWebhookProbeColumn = channel_bridge_schema_column_exists($pdo, CHANNEL_BRIDGE_TABLE_SETTINGS, 'webhook_probe_enabled');
+    $probeSelect = $hasWebhookProbeColumn ? 'webhook_probe_enabled' : '1 AS webhook_probe_enabled';
 
     $st = $pdo->query("
       SELECT
@@ -2808,7 +2831,8 @@ if (!function_exists('channel_bridge_now')) {
         max_enabled,
         max_api_key,
         max_base_url,
-        max_send_path
+        max_send_path,
+        " . $probeSelect . "
       FROM " . CHANNEL_BRIDGE_TABLE_SETTINGS . "
       WHERE id = 1
       LIMIT 1
@@ -2835,6 +2859,7 @@ if (!function_exists('channel_bridge_now')) {
       'max_api_key' => trim((string)($row['max_api_key'] ?? '')),
       'max_base_url' => rtrim(trim((string)($row['max_base_url'] ?? 'https://platform-api.max.ru')), '/'),
       'max_send_path' => trim((string)($row['max_send_path'] ?? '/messages')),
+      'webhook_probe_enabled' => ((int)($row['webhook_probe_enabled'] ?? 1) === 1) ? 1 : 0,
     ];
 
     if (!in_array($settings['tg_parse_mode'], ['HTML', 'Markdown', 'MarkdownV2', ''], true)) {
@@ -2889,11 +2914,16 @@ if (!function_exists('channel_bridge_now')) {
     $maxApiKey = trim((string)($input['max_api_key'] ?? ''));
     $maxBaseUrl = rtrim(trim((string)($input['max_base_url'] ?? 'https://platform-api.max.ru')), '/');
     $maxSendPath = trim((string)($input['max_send_path'] ?? '/messages'));
+    $webhookProbeEnabled = ((int)($input['webhook_probe_enabled'] ?? 1) === 1) ? 1 : 0;
     if ($maxBaseUrl === '') $maxBaseUrl = 'https://platform-api.max.ru';
     if ($maxBaseUrl === 'https://botapi.max.ru') $maxBaseUrl = 'https://platform-api.max.ru';
     if ($maxSendPath === '') $maxSendPath = '/messages';
+    $hasWebhookProbeColumn = channel_bridge_schema_column_exists($pdo, CHANNEL_BRIDGE_TABLE_SETTINGS, 'webhook_probe_enabled');
+    $probeInsertColumns = $hasWebhookProbeColumn ? ",\n        webhook_probe_enabled" : '';
+    $probeInsertValues = $hasWebhookProbeColumn ? ",\n        :webhook_probe_enabled" : '';
+    $probeUpdateSet = $hasWebhookProbeColumn ? ",\n        webhook_probe_enabled = VALUES(webhook_probe_enabled)" : '';
 
-    $pdo->prepare("
+    $st = $pdo->prepare("
       INSERT INTO " . CHANNEL_BRIDGE_TABLE_SETTINGS . "
       (
         id,
@@ -2909,7 +2939,7 @@ if (!function_exists('channel_bridge_now')) {
         max_enabled,
         max_api_key,
         max_base_url,
-        max_send_path
+        max_send_path" . $probeInsertColumns . "
       )
       VALUES
       (
@@ -2926,7 +2956,7 @@ if (!function_exists('channel_bridge_now')) {
         :max_enabled,
         :max_api_key,
         :max_base_url,
-        :max_send_path
+        :max_send_path" . $probeInsertValues . "
       )
       ON DUPLICATE KEY UPDATE
         enabled = VALUES(enabled),
@@ -2941,8 +2971,9 @@ if (!function_exists('channel_bridge_now')) {
         max_enabled = VALUES(max_enabled),
         max_api_key = VALUES(max_api_key),
         max_base_url = VALUES(max_base_url),
-        max_send_path = VALUES(max_send_path)
-    ")->execute([
+        max_send_path = VALUES(max_send_path)" . $probeUpdateSet . "
+    ");
+    $bind = [
       ':enabled' => $enabled,
       ':tg_enabled' => $tgEnabled,
       ':tg_bot_token' => $tgBotToken,
@@ -2956,7 +2987,11 @@ if (!function_exists('channel_bridge_now')) {
       ':max_api_key' => $maxApiKey,
       ':max_base_url' => $maxBaseUrl,
       ':max_send_path' => $maxSendPath,
-    ]);
+    ];
+    if ($hasWebhookProbeColumn) {
+      $bind[':webhook_probe_enabled'] = $webhookProbeEnabled;
+    }
+    $st->execute($bind);
 
     $linkSuffixRules = [];
     if (isset($input['link_suffix_rules']) && is_array($input['link_suffix_rules'])) {
@@ -4052,6 +4087,206 @@ if (!function_exists('channel_bridge_now')) {
   }
 
   /**
+   * Resolves image extension by Telegram file path or HTTP content type.
+   *
+   * @param string $filePath
+   * @param string $contentType
+   * @return string
+   */
+  function channel_bridge_tg_guess_photo_ext(string $filePath, string $contentType = ''): string
+  {
+    $ext = strtolower((string)pathinfo($filePath, PATHINFO_EXTENSION));
+    if ($ext !== '') {
+      return $ext;
+    }
+    $contentType = strtolower(trim($contentType));
+    if (strpos($contentType, 'image/jpeg') !== false) return 'jpg';
+    if (strpos($contentType, 'image/png') !== false) return 'png';
+    if (strpos($contentType, 'image/webp') !== false) return 'webp';
+    if (strpos($contentType, 'image/gif') !== false) return 'gif';
+    return 'bin';
+  }
+
+  /**
+   * Moves temporary file into date-based channel_bridge photo storage.
+   *
+   * @param string $tmpPath
+   * @param string $fileId
+   * @param string $ext
+   * @return array<string,mixed>
+   */
+  function channel_bridge_tg_move_tmp_photo_to_storage(string $tmpPath, string $fileId, string $ext): array
+  {
+    $tmpPath = trim($tmpPath);
+    $fileId = trim($fileId);
+    $ext = trim($ext);
+    if ($tmpPath === '' || !is_file($tmpPath)) {
+      return ['ok' => false, 'error' => 'TMP_FILE_MISSING'];
+    }
+    if ($ext === '') {
+      $ext = 'bin';
+    }
+
+    $dir = channel_bridge_photo_storage_date_dir();
+    $name = 'tg_' . date('His') . '_' . substr(sha1($fileId), 0, 12) . '.' . $ext;
+    $dest = rtrim($dir, '/\\') . '/' . $name;
+
+    if (@rename($tmpPath, $dest)) {
+      return ['ok' => true, 'path' => $dest];
+    }
+    if (@copy($tmpPath, $dest)) {
+      @unlink($tmpPath);
+      return ['ok' => true, 'path' => $dest];
+    }
+
+    @unlink($tmpPath);
+    return ['ok' => false, 'error' => 'FILE_MOVE_FAILED'];
+  }
+
+  /**
+   * Downloads Telegram file URLs in parallel and returns local/error maps.
+   *
+   * @param array<int,array<string,string>> $tasks
+   * @param int $timeout
+   * @param int $concurrency
+   * @return array<string,mixed>
+   */
+  function channel_bridge_tg_download_photo_tasks_parallel(array $tasks, int $timeout = 20, int $concurrency = 4): array
+  {
+    if (!function_exists('curl_multi_init') || !function_exists('curl_init')) {
+      return ['ok' => false, 'error' => 'CURL_MULTI_UNAVAILABLE', 'local_map' => [], 'error_map' => []];
+    }
+    if ($timeout < 1) {
+      $timeout = 20;
+    }
+    $concurrency = max(1, min(8, $concurrency));
+    if (!$tasks) {
+      return ['ok' => true, 'local_map' => [], 'error_map' => []];
+    }
+
+    $multi = curl_multi_init();
+    $pending = array_values($tasks);
+    $active = [];
+    $localMap = [];
+    $errorMap = [];
+
+    $openHandle = static function (array $task, int $timeoutSeconds) use ($multi, &$active, &$errorMap): void {
+      $fileId = trim((string)($task['file_id'] ?? ''));
+      $url = trim((string)($task['url'] ?? ''));
+      if ($fileId === '' || $url === '') {
+        if ($fileId !== '') {
+          $errorMap[$fileId] = 'TG_FILE_URL_ERROR';
+        }
+        return;
+      }
+
+      $tmpPath = tempnam(sys_get_temp_dir(), 'cb_tg_img_');
+      if (!is_string($tmpPath) || $tmpPath === '') {
+        $errorMap[$fileId] = 'TMP_CREATE_FAILED';
+        return;
+      }
+
+      $fp = @fopen($tmpPath, 'wb');
+      if ($fp === false) {
+        @unlink($tmpPath);
+        $errorMap[$fileId] = 'TMP_OPEN_FAILED';
+        return;
+      }
+
+      $ch = curl_init($url);
+      curl_setopt_array($ch, [
+        CURLOPT_FILE => $fp,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_TIMEOUT => $timeoutSeconds,
+        CURLOPT_CONNECTTIMEOUT => 5,
+      ]);
+      curl_multi_add_handle($multi, $ch);
+      $key = is_object($ch) ? ('o' . spl_object_id($ch)) : ('r' . (string)(int)$ch);
+      $active[$key] = [
+        'ch' => $ch,
+        'fp' => $fp,
+        'tmp_path' => $tmpPath,
+        'file_id' => $fileId,
+        'file_path' => trim((string)($task['file_path'] ?? '')),
+      ];
+    };
+
+    while (count($active) < $concurrency && $pending) {
+      $openHandle((array)array_shift($pending), $timeout);
+    }
+
+    do {
+      do {
+        $exec = curl_multi_exec($multi, $running);
+      } while ($exec === CURLM_CALL_MULTI_PERFORM);
+
+      while (($info = curl_multi_info_read($multi)) !== false) {
+        $ch = $info['handle'] ?? null;
+        if (!$ch) {
+          continue;
+        }
+        $key = is_object($ch) ? ('o' . spl_object_id($ch)) : ('r' . (string)(int)$ch);
+        $meta = $active[$key] ?? null;
+        if (!is_array($meta)) {
+          curl_multi_remove_handle($multi, $ch);
+          curl_close($ch);
+          continue;
+        }
+        unset($active[$key]);
+
+        $fileId = trim((string)($meta['file_id'] ?? ''));
+        $tmpPath = trim((string)($meta['tmp_path'] ?? ''));
+        $filePath = trim((string)($meta['file_path'] ?? ''));
+        $fp = $meta['fp'] ?? null;
+        if (is_resource($fp)) {
+          fclose($fp);
+        }
+
+        $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $contentType = trim((string)curl_getinfo($ch, CURLINFO_CONTENT_TYPE));
+        $curlError = trim((string)curl_error($ch));
+        $resultCode = (int)($info['result'] ?? CURLE_OK);
+
+        $ok = ($resultCode === CURLE_OK && $httpCode >= 200 && $httpCode < 300 && $tmpPath !== '' && is_file($tmpPath) && (int)@filesize($tmpPath) > 0);
+        if ($ok) {
+          $ext = channel_bridge_tg_guess_photo_ext($filePath, $contentType);
+          $moved = channel_bridge_tg_move_tmp_photo_to_storage($tmpPath, $fileId, $ext);
+          if (($moved['ok'] ?? false) === true) {
+            $localMap[$fileId] = trim((string)($moved['path'] ?? ''));
+          } else {
+            $errorMap[$fileId] = trim((string)($moved['error'] ?? 'FILE_MOVE_FAILED'));
+          }
+        } else {
+          if ($tmpPath !== '' && is_file($tmpPath)) {
+            @unlink($tmpPath);
+          }
+          $error = $curlError !== '' ? $curlError : (($httpCode > 0) ? ('HTTP_' . $httpCode) : 'TG_FILE_DOWNLOAD_ERROR');
+          if ($fileId !== '') {
+            $errorMap[$fileId] = $error;
+          }
+        }
+
+        curl_multi_remove_handle($multi, $ch);
+        curl_close($ch);
+
+        while (count($active) < $concurrency && $pending) {
+          $openHandle((array)array_shift($pending), $timeout);
+        }
+      }
+
+      if ($running > 0) {
+        $selected = curl_multi_select($multi, 1.0);
+        if ($selected === -1) {
+          usleep(100000);
+        }
+      }
+    } while ($running > 0 || $active);
+
+    curl_multi_close($multi);
+    return ['ok' => true, 'local_map' => $localMap, 'error_map' => $errorMap];
+  }
+
+  /**
    * channel_bridge_tg_preload_photos()
    * Downloads Telegram photos to local storage and enriches payload with local paths.
    *
@@ -4075,13 +4310,56 @@ if (!function_exists('channel_bridge_now')) {
     $local = [];
     $localMap = [];
     $errorMap = [];
+
+    $tasks = [];
+    if (count($fileIds) > 1) {
+      foreach ($fileIds as $fileId) {
+        $urlRes = channel_bridge_tg_build_file_download_url($tgToken, $fileId);
+        if (($urlRes['ok'] ?? false) === true) {
+          $tasks[] = [
+            'file_id' => $fileId,
+            'url' => trim((string)($urlRes['url'] ?? '')),
+            'file_path' => trim((string)($urlRes['file_path'] ?? '')),
+          ];
+          continue;
+        }
+        $error = trim((string)($urlRes['error'] ?? 'TG_FILE_URL_ERROR'));
+        if ($error === '') {
+          $error = 'TG_FILE_URL_ERROR';
+        }
+        $errorMap[$fileId] = $error;
+      }
+
+      if ($tasks) {
+        $parallel = channel_bridge_tg_download_photo_tasks_parallel($tasks, 20, 4);
+        if (($parallel['ok'] ?? false) === true) {
+          $localMap = is_array($parallel['local_map'] ?? null) ? (array)$parallel['local_map'] : [];
+          $parallelErrors = is_array($parallel['error_map'] ?? null) ? (array)$parallel['error_map'] : [];
+          foreach ($parallelErrors as $fileId => $error) {
+            $fid = trim((string)$fileId);
+            if ($fid === '' || isset($localMap[$fid])) {
+              continue;
+            }
+            $errorMap[$fid] = trim((string)$error);
+          }
+        }
+      }
+    }
+
     foreach ($fileIds as $fileId) {
+      if (isset($localMap[$fileId]) && trim((string)$localMap[$fileId]) !== '') {
+        $path = trim((string)$localMap[$fileId]);
+        $local[$path] = true;
+        continue;
+      }
+
       $res = channel_bridge_tg_download_photo_to_storage($tgToken, $fileId, 2, 500);
       if (($res['ok'] ?? false) === true) {
         $path = trim((string)($res['path'] ?? ''));
         if ($path !== '') {
           $local[$path] = true;
           $localMap[$fileId] = $path;
+          unset($errorMap[$fileId]);
         }
         continue;
       }

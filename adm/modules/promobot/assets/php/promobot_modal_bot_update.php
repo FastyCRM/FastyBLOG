@@ -19,13 +19,38 @@ if (!promobot_is_manage_role($roles)) {
 }
 
 $botId = (int)($_GET['id'] ?? 0);
-$bot = promobot_bot_get(db(), $botId);
+$pdo = db();
+$bot = promobot_bot_get($pdo, $botId);
 if (!$bot) {
   json_err(promobot_t('promobot.flash_bot_not_found'), 404);
 }
 
 $csrf = csrf_token();
 $platform = (string)($bot['platform'] ?? PROMOBOT_PLATFORM_TG);
+$promoSourceBotId = (int)($bot['promo_source_bot_id'] ?? 0);
+$promoSourceBots = promobot_bot_promo_source_options($pdo, $botId);
+
+if ($promoSourceBotId === $botId) {
+  $promoSourceBotId = 0;
+}
+
+if ($promoSourceBotId > 0) {
+  $knownSource = false;
+  foreach ($promoSourceBots as $sourceBotRow) {
+    if ((int)($sourceBotRow['id'] ?? 0) === $promoSourceBotId) {
+      $knownSource = true;
+      break;
+    }
+  }
+  if (!$knownSource) {
+    $promoSourceBot = promobot_bot_get($pdo, $promoSourceBotId);
+    if ($promoSourceBot) {
+      $promoSourceBots[] = $promoSourceBot;
+    } else {
+      $promoSourceBotId = 0;
+    }
+  }
+}
 
 $webhookUrl = promobot_bot_webhook_url($botId, $platform, true);
 
@@ -47,6 +72,26 @@ ob_start();
       <label class="field field--stack">
         <span class="field__label"><?= h(promobot_t('promobot.field_platform')) ?></span>
         <input class="select input--readonly" style="height:40px;" type="text" readonly value="<?= h($platform === PROMOBOT_PLATFORM_MAX ? promobot_t('promobot.platform_max') : promobot_t('promobot.platform_tg')) ?>">
+      </label>
+
+      <label class="field field--stack">
+        <span class="field__label"><?= h(promobot_t('promobot.field_promo_source_bot')) ?></span>
+        <select class="select" name="promo_source_bot_id">
+          <option value="0" <?= $promoSourceBotId === 0 ? 'selected' : '' ?>><?= h(promobot_t('promobot.promo_source_self')) ?></option>
+          <?php foreach ($promoSourceBots as $sourceBot): ?>
+            <?php
+              $sourceBotId = (int)($sourceBot['id'] ?? 0);
+              $sourceBotName = trim((string)($sourceBot['name'] ?? ''));
+              $sourcePlatform = (string)($sourceBot['platform'] ?? '');
+              $sourcePlatformLabel = ($sourcePlatform === PROMOBOT_PLATFORM_MAX)
+                ? promobot_t('promobot.platform_max')
+                : promobot_t('promobot.platform_tg');
+            ?>
+            <option value="<?= (int)$sourceBotId ?>" <?= $sourceBotId === $promoSourceBotId ? 'selected' : '' ?>>
+              <?= h($sourceBotName !== '' ? $sourceBotName : ('#' . $sourceBotId)) ?> (<?= h($sourcePlatformLabel) ?>)
+            </option>
+          <?php endforeach; ?>
+        </select>
       </label>
 
       <label class="field" style="display:flex; gap:8px; align-items:center;">

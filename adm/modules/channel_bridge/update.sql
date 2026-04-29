@@ -281,3 +281,19 @@ SET @cb_vk_cleanup_log_text_sql := IF(
 PREPARE cb_vk_cleanup_log_text_stmt FROM @cb_vk_cleanup_log_text_sql;
 EXECUTE cb_vk_cleanup_log_text_stmt;
 DEALLOCATE PREPARE cb_vk_cleanup_log_text_stmt;
+
+SET @cb_has_webhook_probe_enabled := (
+  SELECT COUNT(*)
+  FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'channel_bridge_settings'
+    AND COLUMN_NAME = 'webhook_probe_enabled'
+);
+SET @cb_webhook_probe_enabled_sql := IF(
+  @cb_has_webhook_probe_enabled = 0,
+  'ALTER TABLE `channel_bridge_settings` ADD COLUMN `webhook_probe_enabled` TINYINT(1) NOT NULL DEFAULT 1 AFTER `max_send_path`',
+  'SELECT 1'
+);
+PREPARE cb_webhook_probe_enabled_stmt FROM @cb_webhook_probe_enabled_sql;
+EXECUTE cb_webhook_probe_enabled_stmt;
+DEALLOCATE PREPARE cb_webhook_probe_enabled_stmt;

@@ -322,6 +322,130 @@ if (!function_exists('promobot_now')) {
   }
 
   /**
+   * promobot_bot_promo_source_id()
+   * Возвращает id источника промокодов для бота.
+   *
+   * @param array<string,mixed> $bot
+   * @return int
+   */
+  function promobot_bot_promo_source_id(array $bot): int
+  {
+    return (int)($bot['promo_source_bot_id'] ?? 0);
+  }
+
+  /**
+   * promobot_bot_promo_owner_id()
+   * Возвращает фактический bot_id владельца списка промокодов.
+   *
+   * @param PDO $pdo
+   * @param int $botId
+   * @return int
+   */
+  function promobot_bot_promo_owner_id(PDO $pdo, int $botId): int
+  {
+    promobot_require_schema($pdo);
+
+    if ($botId <= 0) return 0;
+
+    $originBotId = $botId;
+    $currentBot = promobot_bot_get($pdo, $botId);
+    if (!$currentBot) return 0;
+
+    $guard = [];
+    $hops = 0;
+    $maxHops = 16;
+
+    while ($hops < $maxHops) {
+      $sourceBotId = promobot_bot_promo_source_id($currentBot);
+      if ($sourceBotId <= 0 || $sourceBotId === $botId) {
+        return $botId;
+      }
+
+      if (isset($guard[$sourceBotId])) {
+        return $originBotId;
+      }
+      $guard[$sourceBotId] = true;
+
+      $sourceBot = promobot_bot_get($pdo, $sourceBotId);
+      if (!$sourceBot) {
+        return $botId;
+      }
+
+      $botId = $sourceBotId;
+      $currentBot = $sourceBot;
+      $hops++;
+    }
+
+    return $originBotId;
+  }
+
+  /**
+   * promobot_bot_promo_owner()
+   * Возвращает бота-владельца списка промокодов.
+   *
+   * @param PDO $pdo
+   * @param int $botId
+   * @return array<string,mixed>
+   */
+  function promobot_bot_promo_owner(PDO $pdo, int $botId): array
+  {
+    $ownerBotId = promobot_bot_promo_owner_id($pdo, $botId);
+    if ($ownerBotId <= 0) return [];
+
+    return promobot_bot_get($pdo, $ownerBotId);
+  }
+
+  /**
+   * promobot_bot_promo_source_options()
+   * Возвращает список ботов для выбора источника промокодов.
+   *
+   * @param PDO $pdo
+   * @param int $excludeBotId
+   * @return array<int,array<string,mixed>>
+   */
+  function promobot_bot_promo_source_options(PDO $pdo, int $excludeBotId = 0): array
+  {
+    promobot_require_schema($pdo);
+
+    $rows = $pdo->query("\n      SELECT id, name, platform\n      FROM " . PROMOBOT_TABLE_BOTS . "\n      ORDER BY name ASC, id ASC\n    ")->fetchAll(PDO::FETCH_ASSOC);
+    if (!is_array($rows)) return [];
+
+    if ($excludeBotId <= 0) {
+      return $rows;
+    }
+
+    $out = [];
+    foreach ($rows as $row) {
+      if ((int)($row['id'] ?? 0) === $excludeBotId) continue;
+      $out[] = $row;
+    }
+
+    return $out;
+  }
+
+  /**
+   * promobot_promo_belongs_to_context()
+   * Проверяет, что промокод принадлежит эффективному списку контекстного бота.
+   *
+   * @param PDO $pdo
+   * @param array<string,mixed> $promo
+   * @param int $contextBotId
+   * @return bool
+   */
+  function promobot_promo_belongs_to_context(PDO $pdo, array $promo, int $contextBotId): bool
+  {
+    if ($contextBotId <= 0) return false;
+
+    $promoBotId = (int)($promo['bot_id'] ?? 0);
+    if ($promoBotId <= 0) return false;
+
+    $ownerBotId = promobot_bot_promo_owner_id($pdo, $contextBotId);
+    if ($ownerBotId <= 0) return false;
+
+    return ($ownerBotId === $promoBotId);
+  }
+
+  /**
    * promobot_user_has_bot_access()
    * Проверяет доступ пользователя к боту.
    *
@@ -404,8 +528,11 @@ if (!function_exists('promobot_now')) {
 
     if ($botId <= 0) return [];
 
+    $ownerBotId = promobot_bot_promo_owner_id($pdo, $botId);
+    if ($ownerBotId <= 0) return [];
+
     $st = $pdo->prepare("\n      SELECT *\n      FROM " . PROMOBOT_TABLE_PROMOS . "\n      WHERE bot_id = :bid\n      ORDER BY id DESC\n    ");
-    $st->execute([':bid' => $botId]);
+    $st->execute([':bid' => $ownerBotId]);
     $rows = $st->fetchAll(PDO::FETCH_ASSOC);
 
     return is_array($rows) ? $rows : [];
@@ -485,13 +612,16 @@ if (!function_exists('promobot_now')) {
 
     if ($botId <= 0) return [];
 
+    $ownerBotId = promobot_bot_promo_owner_id($pdo, $botId);
+    if ($ownerBotId <= 0) return [];
+
     $text = trim($text);
     if ($text === '') return [];
 
     $textNorm = promobot_text_lower($text);
 
     $st = $pdo->prepare("\n      SELECT id, keywords, response_text\n      FROM " . PROMOBOT_TABLE_PROMOS . "\n      WHERE bot_id = :bid AND is_active = 1\n      ORDER BY id ASC\n    ");
-    $st->execute([':bid' => $botId]);
+    $st->execute([':bid' => $ownerBotId]);
     $rows = $st->fetchAll(PDO::FETCH_ASSOC);
     if (!is_array($rows)) return [];
 
@@ -1211,6 +1341,530 @@ if (!function_exists('promobot_now')) {
       'http_code' => $code,
       'raw' => (string)$raw,
       'json' => is_array($json) ? $json : null,
+    ];
+  }
+
+  /**
+   * promobot_max_api_key_normalize()
+   * Нормализует MAX API key (без префиксов Bearer/OAuth).
+   *
+   * @param string $apiKey
+   * @return string
+   */
+  function promobot_max_api_key_normalize(string $apiKey): string
+  {
+    $apiKey = trim($apiKey);
+    if (stripos($apiKey, 'Bearer ') === 0) {
+      $apiKey = trim((string)substr($apiKey, 7));
+    }
+    if (stripos($apiKey, 'OAuth ') === 0) {
+      $apiKey = trim((string)substr($apiKey, 6));
+    }
+    return $apiKey;
+  }
+
+  /**
+   * promobot_max_api_version()
+   * Текущая версия webhook-подписки MAX API.
+   *
+   * @return string
+   */
+  function promobot_max_api_version(): string
+  {
+    return '1.2.5';
+  }
+
+  /**
+   * promobot_max_http_json()
+   * Универсальный HTTP JSON helper для MAX API.
+   *
+   * @param string $method
+   * @param string $url
+   * @param array<int,string> $headers
+   * @param array<string,mixed>|null $payload
+   * @param int $timeout
+   * @return array<string,mixed>
+   */
+  function promobot_max_http_json(string $method, string $url, array $headers = [], ?array $payload = null, int $timeout = 20): array
+  {
+    $method = strtoupper(trim($method));
+    if ($method === '') $method = 'GET';
+
+    $url = trim($url);
+    if ($url === '') {
+      return ['ok' => false, 'error' => 'URL_EMPTY', 'http_code' => 0, 'json' => [], 'raw' => ''];
+    }
+
+    $httpCode = 0;
+    $raw = '';
+    $jsonPayload = '';
+    if ($payload !== null) {
+      $jsonPayload = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+      if (!is_string($jsonPayload)) $jsonPayload = '{}';
+    }
+
+    if (function_exists('curl_init')) {
+      $ch = curl_init($url);
+      if (!$ch) {
+        return ['ok' => false, 'error' => 'CURL_INIT_FAILED', 'http_code' => 0, 'json' => [], 'raw' => ''];
+      }
+
+      $requestHeaders = array_merge(['Accept: application/json'], $headers);
+      if ($payload !== null) $requestHeaders[] = 'Content-Type: application/json';
+
+      $opts = [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => $timeout > 0 ? $timeout : 20,
+        CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_HTTPHEADER => $requestHeaders,
+        CURLOPT_CUSTOMREQUEST => $method,
+      ];
+      if ($payload !== null) $opts[CURLOPT_POSTFIELDS] = $jsonPayload;
+      curl_setopt_array($ch, $opts);
+
+      $result = curl_exec($ch);
+      $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+      $curlError = trim((string)curl_error($ch));
+      curl_close($ch);
+
+      if ($result === false) {
+        return ['ok' => false, 'error' => 'CURL_ERROR', 'description' => $curlError, 'http_code' => $httpCode, 'json' => [], 'raw' => ''];
+      }
+
+      $raw = (string)$result;
+    } else {
+      $headersTxt = "Accept: application/json\r\n";
+      foreach ($headers as $header) {
+        $headersTxt .= trim((string)$header) . "\r\n";
+      }
+      if ($payload !== null) $headersTxt .= "Content-Type: application/json\r\n";
+
+      $ctx = stream_context_create([
+        'http' => [
+          'method' => $method,
+          'header' => $headersTxt,
+          'timeout' => $timeout > 0 ? $timeout : 20,
+          'content' => $payload !== null ? $jsonPayload : '',
+          'ignore_errors' => true,
+        ],
+      ]);
+      $result = @file_get_contents($url, false, $ctx);
+      $meta = $http_response_header ?? [];
+      if (is_array($meta) && isset($meta[0]) && preg_match('~\s(\d{3})\s~', (string)$meta[0], $m)) {
+        $httpCode = (int)$m[1];
+      }
+      if ($result === false) {
+        return ['ok' => false, 'error' => 'HTTP_ERROR', 'http_code' => $httpCode, 'json' => [], 'raw' => ''];
+      }
+
+      $raw = (string)$result;
+    }
+
+    $json = json_decode($raw, true);
+    if (!is_array($json)) $json = [];
+
+    return [
+      'ok' => true,
+      'http_code' => $httpCode,
+      'json' => $json,
+      'raw' => $raw,
+    ];
+  }
+
+  /**
+   * promobot_max_extract_error()
+   * Преобразует ответ MAX API в компактную ошибку.
+   *
+   * @param array<string,mixed> $res
+   * @return string
+   */
+  function promobot_max_extract_error(array $res): string
+  {
+    $json = (array)($res['json'] ?? []);
+    $err = trim((string)($json['message'] ?? $json['error'] ?? $res['description'] ?? $res['error'] ?? ''));
+    if ($err === '') {
+      $httpCode = (int)($res['http_code'] ?? 0);
+      if ($httpCode > 0) $err = 'HTTP_' . $httpCode;
+    }
+    return $err !== '' ? $err : 'MAX_ERROR';
+  }
+
+  /**
+   * promobot_max_webhook_target_url()
+   * Публичный URL webhook для MAX-бота.
+   *
+   * @param array<string,mixed> $bot
+   * @return string
+   */
+  function promobot_max_webhook_target_url(array $bot): string
+  {
+    $url = trim((string)($bot['webhook_url'] ?? ''));
+    if ($url !== '' && preg_match('~^https?://~i', $url)) return $url;
+
+    $botId = (int)($bot['id'] ?? 0);
+    if ($botId <= 0) return '';
+
+    $computed = promobot_bot_webhook_url($botId, PROMOBOT_PLATFORM_MAX, true);
+    return trim((string)$computed);
+  }
+
+  /**
+   * promobot_max_subscription_url()
+   * URL подписки из объекта подписки MAX API.
+   *
+   * @param array<string,mixed> $subscription
+   * @return string
+   */
+  function promobot_max_subscription_url(array $subscription): string
+  {
+    $req = (array)($subscription['request'] ?? []);
+    return trim((string)($subscription['url'] ?? $req['url'] ?? $subscription['endpoint_url'] ?? ''));
+  }
+
+  /**
+   * promobot_max_subscription_version()
+   * Версия подписки из объекта MAX API.
+   *
+   * @param array<string,mixed> $subscription
+   * @return string
+   */
+  function promobot_max_subscription_version(array $subscription): string
+  {
+    $req = (array)($subscription['request'] ?? []);
+    return trim((string)($subscription['version'] ?? $req['version'] ?? ''));
+  }
+
+  /**
+   * promobot_max_subscription_accepts_messages()
+   * Проверяет, что подписка принимает message_created.
+   *
+   * @param array<string,mixed> $subscription
+   * @return bool
+   */
+  function promobot_max_subscription_accepts_messages(array $subscription): bool
+  {
+    $req = (array)($subscription['request'] ?? []);
+    $types = $subscription['update_types'] ?? ($req['update_types'] ?? []);
+    if (!is_array($types) || !$types) return true;
+
+    foreach ($types as $type) {
+      if (trim((string)$type) === 'message_created') return true;
+    }
+    return false;
+  }
+
+  /**
+   * promobot_max_subscription_recreate_reason()
+   * Причина, по которой подписку нужно пересоздать.
+   *
+   * @param array<string,mixed> $subscription
+   * @return string
+   */
+  function promobot_max_subscription_recreate_reason(array $subscription): string
+  {
+    if (!promobot_max_subscription_accepts_messages($subscription)) {
+      return 'missing_message_created';
+    }
+
+    $version = promobot_max_subscription_version($subscription);
+    if ($version === '') return 'missing_version';
+    if ($version !== promobot_max_api_version()) return 'version_mismatch';
+
+    return '';
+  }
+
+  /**
+   * promobot_max_subscription_match()
+   * Проверяет совпадение подписки с целевым URL.
+   *
+   * @param array<string,mixed> $subscription
+   * @param string $endpointUrl
+   * @return bool
+   */
+  function promobot_max_subscription_match(array $subscription, string $endpointUrl): bool
+  {
+    $url = promobot_max_subscription_url($subscription);
+    if ($url === '' || $endpointUrl === '' || $url !== $endpointUrl) return false;
+    return promobot_max_subscription_accepts_messages($subscription);
+  }
+
+  /**
+   * promobot_max_subscription_list_for_bot()
+   * Получает список webhook-подписок MAX API.
+   *
+   * @param array<string,mixed> $bot
+   * @return array<string,mixed>
+   */
+  function promobot_max_subscription_list_for_bot(array $bot): array
+  {
+    $baseUrl = rtrim(trim((string)($bot['max_base_url'] ?? 'https://platform-api.max.ru')), '/');
+    $apiKey = promobot_max_api_key_normalize((string)($bot['max_api_key'] ?? ''));
+    if ($baseUrl === '') return ['ok' => false, 'error' => 'MAX_BASE_URL_EMPTY', 'items' => []];
+    if ($apiKey === '') return ['ok' => false, 'error' => 'MAX_API_KEY_EMPTY', 'items' => []];
+
+    $url = $baseUrl . '/subscriptions?count=100';
+    $res = promobot_max_http_json('GET', $url, [
+      'Authorization: ' . $apiKey,
+    ], null, 20);
+    if (($res['ok'] ?? false) !== true) {
+      return ['ok' => false, 'error' => promobot_max_extract_error($res), 'items' => []];
+    }
+
+    $httpCode = (int)($res['http_code'] ?? 0);
+    if ($httpCode < 200 || $httpCode >= 300) {
+      return ['ok' => false, 'error' => promobot_max_extract_error($res), 'items' => []];
+    }
+
+    $json = (array)($res['json'] ?? []);
+    $items = [];
+    if (isset($json['subscriptions']) && is_array($json['subscriptions'])) {
+      $items = $json['subscriptions'];
+    } elseif (isset($json['items']) && is_array($json['items'])) {
+      $items = $json['items'];
+    } elseif (isset($json['result']['subscriptions']) && is_array($json['result']['subscriptions'])) {
+      $items = $json['result']['subscriptions'];
+    } elseif (isset($json['result']['items']) && is_array($json['result']['items'])) {
+      $items = $json['result']['items'];
+    }
+
+    return ['ok' => true, 'items' => is_array($items) ? $items : []];
+  }
+
+  /**
+   * promobot_max_subscription_delete_for_bot()
+   * Удаляет подписку MAX по URL.
+   *
+   * @param array<string,mixed> $bot
+   * @param string $urlToDelete
+   * @return array<string,mixed>
+   */
+  function promobot_max_subscription_delete_for_bot(array $bot, string $urlToDelete): array
+  {
+    $urlToDelete = trim($urlToDelete);
+    if ($urlToDelete === '') return ['ok' => false, 'error' => 'SUBSCRIPTION_URL_EMPTY'];
+
+    $baseUrl = rtrim(trim((string)($bot['max_base_url'] ?? 'https://platform-api.max.ru')), '/');
+    $apiKey = promobot_max_api_key_normalize((string)($bot['max_api_key'] ?? ''));
+    if ($baseUrl === '') return ['ok' => false, 'error' => 'MAX_BASE_URL_EMPTY'];
+    if ($apiKey === '') return ['ok' => false, 'error' => 'MAX_API_KEY_EMPTY'];
+
+    $url = $baseUrl . '/subscriptions?url=' . rawurlencode($urlToDelete);
+    $res = promobot_max_http_json('DELETE', $url, [
+      'Authorization: ' . $apiKey,
+    ], null, 25);
+    if (($res['ok'] ?? false) !== true) {
+      return ['ok' => false, 'error' => promobot_max_extract_error($res)];
+    }
+
+    $httpCode = (int)($res['http_code'] ?? 0);
+    $json = (array)($res['json'] ?? []);
+    if ($httpCode < 200 || $httpCode >= 300) {
+      return ['ok' => false, 'error' => promobot_max_extract_error($res), 'http_code' => $httpCode];
+    }
+
+    if (array_key_exists('success', $json) && (bool)$json['success'] === false) {
+      $error = trim((string)($json['message'] ?? $json['error'] ?? 'MAX_UNSUBSCRIBE_FAILED'));
+      if ($error === '') $error = 'MAX_UNSUBSCRIBE_FAILED';
+      return ['ok' => false, 'error' => $error, 'http_code' => $httpCode];
+    }
+
+    return ['ok' => true];
+  }
+
+  /**
+   * promobot_max_webhook_info_for_bot()
+   * Проверяет наличие и актуальность MAX webhook-подписки.
+   *
+   * @param array<string,mixed> $bot
+   * @return array<string,mixed>
+   */
+  function promobot_max_webhook_info_for_bot(array $bot): array
+  {
+    $endpointUrl = promobot_max_webhook_target_url($bot);
+    if ($endpointUrl === '') {
+      return ['ok' => false, 'error' => 'MAX_WEBHOOK_URL_EMPTY', 'result' => ['url' => ''], 'expected_url' => ''];
+    }
+
+    $listed = promobot_max_subscription_list_for_bot($bot);
+    if (($listed['ok'] ?? false) !== true) {
+      $listed['result'] = ['url' => ''];
+      $listed['expected_url'] = $endpointUrl;
+      return $listed;
+    }
+
+    $sameUrlSubscription = null;
+    foreach ((array)($listed['items'] ?? []) as $sub) {
+      if (!is_array($sub)) continue;
+
+      $subUrl = promobot_max_subscription_url($sub);
+      if ($subUrl === $endpointUrl && $sameUrlSubscription === null) {
+        $sameUrlSubscription = $sub;
+      }
+
+      if (promobot_max_subscription_match($sub, $endpointUrl)) {
+        return [
+          'ok' => true,
+          'result' => ['url' => $endpointUrl],
+          'subscription' => $sub,
+          'items_count' => count((array)($listed['items'] ?? [])),
+          'expected_url' => $endpointUrl,
+          'subscription_version' => promobot_max_subscription_version($sub),
+          'recreate_needed' => 0,
+          'recreate_reason' => '',
+        ];
+      }
+    }
+
+    if (is_array($sameUrlSubscription)) {
+      $recreateReason = promobot_max_subscription_recreate_reason($sameUrlSubscription);
+      return [
+        'ok' => false,
+        'error' => 'MAX_WEBHOOK_RECREATE_REQUIRED',
+        'result' => ['url' => $endpointUrl],
+        'subscription' => $sameUrlSubscription,
+        'items_count' => count((array)($listed['items'] ?? [])),
+        'expected_url' => $endpointUrl,
+        'subscription_version' => promobot_max_subscription_version($sameUrlSubscription),
+        'recreate_needed' => 1,
+        'recreate_reason' => $recreateReason,
+      ];
+    }
+
+    return [
+      'ok' => false,
+      'error' => 'MAX_WEBHOOK_NOT_FOUND',
+      'result' => ['url' => ''],
+      'items_count' => count((array)($listed['items'] ?? [])),
+      'expected_url' => $endpointUrl,
+      'recreate_needed' => 0,
+      'recreate_reason' => '',
+    ];
+  }
+
+  /**
+   * promobot_max_webhook_set_for_bot()
+   * Создаёт/переустанавливает MAX webhook-подписку.
+   *
+   * @param array<string,mixed> $bot
+   * @return array<string,mixed>
+   */
+  function promobot_max_webhook_set_for_bot(array $bot): array
+  {
+    $endpointUrl = promobot_max_webhook_target_url($bot);
+    if ($endpointUrl === '' || !preg_match('~^https?://~i', $endpointUrl)) {
+      return ['ok' => false, 'error' => 'MAX_WEBHOOK_URL_INVALID', 'url' => $endpointUrl];
+    }
+
+    $listed = promobot_max_subscription_list_for_bot($bot);
+    $removed = 0;
+    $removeErrors = [];
+    $recreated = 0;
+    $recreateReason = '';
+
+    if (($listed['ok'] ?? false) === true) {
+      foreach ((array)($listed['items'] ?? []) as $sub) {
+        if (!is_array($sub)) continue;
+
+        $subUrl = promobot_max_subscription_url($sub);
+        if ($subUrl !== $endpointUrl) continue;
+
+        $reason = promobot_max_subscription_recreate_reason($sub);
+        if ($reason === '' && promobot_max_subscription_match($sub, $endpointUrl)) {
+          return [
+            'ok' => true,
+            'created' => 0,
+            'removed' => $removed,
+            'remove_errors' => $removeErrors,
+            'recreated' => $recreated,
+            'recreate_reason' => $recreateReason,
+            'url' => $endpointUrl,
+          ];
+        }
+
+        $delete = promobot_max_subscription_delete_for_bot($bot, $subUrl);
+        if (($delete['ok'] ?? false) !== true) {
+          $removeErrors[] = [
+            'url' => $subUrl,
+            'error' => (string)($delete['error'] ?? 'DELETE_FAILED'),
+          ];
+          return [
+            'ok' => false,
+            'error' => 'MAX_WEBHOOK_DELETE_FAILED',
+            'details' => $removeErrors,
+            'url' => $endpointUrl,
+          ];
+        }
+
+        $removed++;
+        $recreated = 1;
+        $recreateReason = $reason !== '' ? $reason : 'recreate';
+        break;
+      }
+    } else {
+      return ['ok' => false, 'error' => (string)($listed['error'] ?? 'MAX_SUBSCRIPTIONS_FAILED')];
+    }
+
+    $baseUrl = rtrim(trim((string)($bot['max_base_url'] ?? 'https://platform-api.max.ru')), '/');
+    $apiKey = promobot_max_api_key_normalize((string)($bot['max_api_key'] ?? ''));
+    if ($baseUrl === '') return ['ok' => false, 'error' => 'MAX_BASE_URL_EMPTY'];
+    if ($apiKey === '') return ['ok' => false, 'error' => 'MAX_API_KEY_EMPTY'];
+
+    $url = $baseUrl . '/subscriptions';
+    $payload = [
+      'url' => $endpointUrl,
+      'version' => promobot_max_api_version(),
+    ];
+    $res = promobot_max_http_json('POST', $url, [
+      'Authorization: ' . $apiKey,
+    ], $payload, 25);
+    if (($res['ok'] ?? false) !== true) {
+      return [
+        'ok' => false,
+        'error' => promobot_max_extract_error($res),
+        'removed' => $removed,
+        'remove_errors' => $removeErrors,
+        'recreated' => $recreated,
+        'recreate_reason' => $recreateReason,
+      ];
+    }
+
+    $httpCode = (int)($res['http_code'] ?? 0);
+    $json = (array)($res['json'] ?? []);
+    if ($httpCode < 200 || $httpCode >= 300) {
+      return [
+        'ok' => false,
+        'error' => promobot_max_extract_error($res),
+        'http_code' => $httpCode,
+        'removed' => $removed,
+        'remove_errors' => $removeErrors,
+        'recreated' => $recreated,
+        'recreate_reason' => $recreateReason,
+      ];
+    }
+
+    if (array_key_exists('success', $json) && (bool)$json['success'] === false) {
+      $error = trim((string)($json['message'] ?? $json['error'] ?? 'MAX_SUBSCRIBE_FAILED'));
+      if ($error === '') $error = 'MAX_SUBSCRIBE_FAILED';
+      return [
+        'ok' => false,
+        'error' => $error,
+        'http_code' => $httpCode,
+        'removed' => $removed,
+        'remove_errors' => $removeErrors,
+        'recreated' => $recreated,
+        'recreate_reason' => $recreateReason,
+      ];
+    }
+
+    return [
+      'ok' => true,
+      'created' => 1,
+      'removed' => $removed,
+      'remove_errors' => $removeErrors,
+      'recreated' => $recreated,
+      'recreate_reason' => $recreateReason,
+      'url' => $endpointUrl,
+      'raw' => $json,
     ];
   }
   /**

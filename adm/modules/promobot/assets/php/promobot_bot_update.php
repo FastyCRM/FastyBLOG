@@ -41,10 +41,29 @@ if (!$bot) {
 
 $name = trim((string)($_POST['name'] ?? ''));
 $enabled = ((int)($_POST['enabled'] ?? 0) === 1) ? 1 : 0;
+$promoSourceBotId = (int)($_POST['promo_source_bot_id'] ?? 0);
 
 if ($name === '') {
   flash(promobot_t('promobot.flash_bot_name_required'), 'danger', 1);
   redirect_return('/adm/index.php?m=' . PROMOBOT_MODULE_CODE . '&bot_id=' . $botId);
+}
+
+if ($promoSourceBotId === $botId) {
+  $promoSourceBotId = 0;
+}
+
+if ($promoSourceBotId > 0) {
+  $sourceBot = promobot_bot_get($pdo, $promoSourceBotId);
+  if (!$sourceBot) {
+    flash(promobot_t('promobot.flash_promo_source_not_found'), 'danger', 1);
+    redirect_return('/adm/index.php?m=' . PROMOBOT_MODULE_CODE . '&bot_id=' . $botId);
+  }
+
+  $sourceOwnerBotId = promobot_bot_promo_owner_id($pdo, $promoSourceBotId);
+  if ($sourceOwnerBotId === $botId) {
+    flash(promobot_t('promobot.flash_promo_source_cycle'), 'danger', 1);
+    redirect_return('/adm/index.php?m=' . PROMOBOT_MODULE_CODE . '&bot_id=' . $botId);
+  }
 }
 
 $platform = (string)($bot['platform'] ?? PROMOBOT_PLATFORM_TG);
@@ -52,6 +71,7 @@ $platform = (string)($bot['platform'] ?? PROMOBOT_PLATFORM_TG);
 $fields = [
   'name' => $name,
   'enabled' => $enabled,
+  'promo_source_bot_id' => $promoSourceBotId > 0 ? $promoSourceBotId : 0,
 ];
 
 if ($platform === PROMOBOT_PLATFORM_TG) {
@@ -74,6 +94,7 @@ $st = $pdo->prepare("\n  UPDATE " . PROMOBOT_TABLE_BOTS . "
   SET
     name = :name,
     enabled = :enabled,
+    promo_source_bot_id = :promo_source_bot_id,
     bot_token = :bot_token,
     webhook_secret = :webhook_secret,
     webhook_url = :webhook_url,
@@ -87,6 +108,7 @@ $st = $pdo->prepare("\n  UPDATE " . PROMOBOT_TABLE_BOTS . "
 $st->execute([
   ':name' => $fields['name'],
   ':enabled' => $fields['enabled'],
+  ':promo_source_bot_id' => (int)($fields['promo_source_bot_id'] ?? 0),
   ':bot_token' => (string)($fields['bot_token'] ?? ''),
   ':webhook_secret' => (string)($fields['webhook_secret'] ?? ''),
   ':webhook_url' => (string)($fields['webhook_url'] ?? ''),
@@ -100,6 +122,7 @@ $st->execute([
 audit_log(PROMOBOT_MODULE_CODE, 'bot_update', 'info', [
   'bot_id' => $botId,
   'platform' => $platform,
+  'promo_source_bot_id' => (int)($fields['promo_source_bot_id'] ?? 0),
 ], PROMOBOT_MODULE_CODE, null, $uid, $role);
 
 flash(promobot_t('promobot.flash_bot_updated'), 'ok');

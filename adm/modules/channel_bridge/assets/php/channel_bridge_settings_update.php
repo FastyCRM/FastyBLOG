@@ -62,6 +62,7 @@ try {
     'max_api_key' => (string)($_POST['max_api_key'] ?? ''),
     'max_base_url' => (string)($_POST['max_base_url'] ?? ''),
     'max_send_path' => (string)($_POST['max_send_path'] ?? ''),
+    'webhook_probe_enabled' => (int)($_POST['webhook_probe_enabled'] ?? 0),
 
     'link_suffix_rules' => $ruleRows,
   ]);

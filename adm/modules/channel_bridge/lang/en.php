@@ -59,6 +59,8 @@ return [
   'channel_bridge.field_tg_parse_mode' => 'TG parse mode',
   'channel_bridge.field_apply_webhook' => 'Apply webhook in Telegram after saving',
   'channel_bridge.field_apply_webhook_hint' => 'Webhook is set to the current domain URL.',
+  'channel_bridge.field_webhook_probe_enabled' => 'Send service notice on webhook receive',
+  'channel_bridge.field_webhook_probe_enabled_hint' => 'Sends "webhook received #..." with server time to Telegram (source) and MAX (active MAX routes).',
   'channel_bridge.webhook_refresh_hint' => 'You can refresh webhook separately without re-saving other settings.',
   'channel_bridge.btn_tg_probe' => 'Check TG and load chats',
   'channel_bridge.btn_webhook_refresh' => 'Refresh webhook',

@@ -14,6 +14,7 @@ require_once __DIR__ . '/promobot_lib.php';
 acl_guard(module_allowed_roles(PROMOBOT_MODULE_CODE));
 
 $promoId = (int)($_GET['id'] ?? 0);
+$contextBotId = (int)($_GET['bot_id'] ?? 0);
 $pdo = db();
 $promo = promobot_promo_get($pdo, $promoId);
 if (!$promo) {
@@ -24,7 +25,14 @@ $botId = (int)($promo['bot_id'] ?? 0);
 $uid = (int)(function_exists('auth_user_id') ? auth_user_id() : 0);
 $roles = function_exists('auth_user_roles') ? (array)auth_user_roles($uid) : [];
 
-if (!promobot_user_has_bot_access($pdo, $uid, $botId, $roles)) {
+if ($contextBotId > 0) {
+  if (!promobot_promo_belongs_to_context($pdo, $promo, $contextBotId)) {
+    json_err(promobot_t('promobot.flash_promo_not_found'), 404);
+  }
+  if (!promobot_user_has_bot_access($pdo, $uid, $contextBotId, $roles)) {
+    json_err(promobot_t('promobot.flash_access_denied'), 403);
+  }
+} elseif (!promobot_user_has_bot_access($pdo, $uid, $botId, $roles)) {
   json_err(promobot_t('promobot.flash_access_denied'), 403);
 }
 
@@ -35,6 +43,7 @@ ob_start();
 <form method="post" action="<?= h(url('/adm/index.php?m=' . PROMOBOT_MODULE_CODE . '&do=promo_update')) ?>" class="form">
   <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
   <input type="hidden" name="id" value="<?= (int)$promoId ?>">
+  <input type="hidden" name="bot_id" value="<?= (int)($contextBotId > 0 ? $contextBotId : $botId) ?>">
 
   <div class="card" style="box-shadow:none; border-color: var(--border-soft);">
     <div class="card__head">

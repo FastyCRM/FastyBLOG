@@ -68,9 +68,9 @@ $dbProfiles = [
   'hosting' => [
     'host' => 'localhost',
     'port' => 3306,
-    'name' => 'u0589068_crm2026blog',
-    'user' => 'u0589068_crm_adm',
-    'pass' => 'FreeDOMJOB1!2@',
+    'name' => 'b139303_blog',
+    'user' => 'b139303_blog_use',
+    'pass' => '02s0sqlj1y4mopkqlh',
     'charset' => 'utf8mb4',
   ],
 ];

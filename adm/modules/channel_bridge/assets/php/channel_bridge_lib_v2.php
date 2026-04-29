@@ -2046,6 +2046,7 @@ if (!function_exists('channel_bridge_now')) {
       'max_api_key' => '',
       'max_base_url' => 'https://platform-api.max.ru',
       'max_send_path' => '/messages',
+      'webhook_probe_enabled' => 1,
     ];
   }
 
@@ -2243,6 +2244,8 @@ if (!function_exists('channel_bridge_now')) {
     channel_bridge_require_schema($pdo);
 
     $defaults = channel_bridge_settings_defaults();
+    $hasWebhookProbeColumn = channel_bridge_schema_column_exists($pdo, CHANNEL_BRIDGE_TABLE_SETTINGS, 'webhook_probe_enabled');
+    $probeSelect = $hasWebhookProbeColumn ? 'webhook_probe_enabled' : '1 AS webhook_probe_enabled';
 
     $st = $pdo->query("
       SELECT
@@ -2258,7 +2261,8 @@ if (!function_exists('channel_bridge_now')) {
         max_enabled,
         max_api_key,
         max_base_url,
-        max_send_path
+        max_send_path,
+        " . $probeSelect . "
       FROM " . CHANNEL_BRIDGE_TABLE_SETTINGS . "
       WHERE id = 1
       LIMIT 1
@@ -2285,6 +2289,7 @@ if (!function_exists('channel_bridge_now')) {
       'max_api_key' => trim((string)($row['max_api_key'] ?? '')),
       'max_base_url' => rtrim(trim((string)($row['max_base_url'] ?? 'https://platform-api.max.ru')), '/'),
       'max_send_path' => trim((string)($row['max_send_path'] ?? '/messages')),
+      'webhook_probe_enabled' => ((int)($row['webhook_probe_enabled'] ?? 1) === 1) ? 1 : 0,
     ];
 
     if (!in_array($settings['tg_parse_mode'], ['HTML', 'Markdown', 'MarkdownV2', ''], true)) {
@@ -2339,11 +2344,16 @@ if (!function_exists('channel_bridge_now')) {
     $maxApiKey = trim((string)($input['max_api_key'] ?? ''));
     $maxBaseUrl = rtrim(trim((string)($input['max_base_url'] ?? 'https://platform-api.max.ru')), '/');
     $maxSendPath = trim((string)($input['max_send_path'] ?? '/messages'));
+    $webhookProbeEnabled = ((int)($input['webhook_probe_enabled'] ?? 1) === 1) ? 1 : 0;
     if ($maxBaseUrl === '') $maxBaseUrl = 'https://platform-api.max.ru';
     if ($maxBaseUrl === 'https://botapi.max.ru') $maxBaseUrl = 'https://platform-api.max.ru';
     if ($maxSendPath === '') $maxSendPath = '/messages';
+    $hasWebhookProbeColumn = channel_bridge_schema_column_exists($pdo, CHANNEL_BRIDGE_TABLE_SETTINGS, 'webhook_probe_enabled');
+    $probeInsertColumns = $hasWebhookProbeColumn ? ",\n        webhook_probe_enabled" : '';
+    $probeInsertValues = $hasWebhookProbeColumn ? ",\n        :webhook_probe_enabled" : '';
+    $probeUpdateSet = $hasWebhookProbeColumn ? ",\n        webhook_probe_enabled = VALUES(webhook_probe_enabled)" : '';
 
-    $pdo->prepare("
+    $st = $pdo->prepare("
       INSERT INTO " . CHANNEL_BRIDGE_TABLE_SETTINGS . "
       (
         id,
@@ -2359,7 +2369,7 @@ if (!function_exists('channel_bridge_now')) {
         max_enabled,
         max_api_key,
         max_base_url,
-        max_send_path
+        max_send_path" . $probeInsertColumns . "
       )
       VALUES
       (
@@ -2376,7 +2386,7 @@ if (!function_exists('channel_bridge_now')) {
         :max_enabled,
         :max_api_key,
         :max_base_url,
-        :max_send_path
+        :max_send_path" . $probeInsertValues . "
       )
       ON DUPLICATE KEY UPDATE
         enabled = VALUES(enabled),
@@ -2391,8 +2401,9 @@ if (!function_exists('channel_bridge_now')) {
         max_enabled = VALUES(max_enabled),
         max_api_key = VALUES(max_api_key),
         max_base_url = VALUES(max_base_url),
-        max_send_path = VALUES(max_send_path)
-    ")->execute([
+        max_send_path = VALUES(max_send_path)" . $probeUpdateSet . "
+    ");
+    $bind = [
       ':enabled' => $enabled,
       ':tg_enabled' => $tgEnabled,
       ':tg_bot_token' => $tgBotToken,
@@ -2406,7 +2417,11 @@ if (!function_exists('channel_bridge_now')) {
       ':max_api_key' => $maxApiKey,
       ':max_base_url' => $maxBaseUrl,
       ':max_send_path' => $maxSendPath,
-    ]);
+    ];
+    if ($hasWebhookProbeColumn) {
+      $bind[':webhook_probe_enabled'] = $webhookProbeEnabled;
+    }
+    $st->execute($bind);
 
     $linkSuffixRules = [];
     if (isset($input['link_suffix_rules']) && is_array($input['link_suffix_rules'])) {
@@ -4395,5 +4410,3 @@ if (!function_exists('channel_bridge_now')) {
     ];
   }
 }
-
-

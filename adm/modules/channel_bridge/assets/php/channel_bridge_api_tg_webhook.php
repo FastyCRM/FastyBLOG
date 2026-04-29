@@ -90,23 +90,193 @@ if (!function_exists('channel_bridge_tg_webhook_elapsed_ms')) {
   }
 }
 
+if (!function_exists('channel_bridge_tg_webhook_is_probe_echo')) {
+  /**
+   * Returns true when incoming update is our own "webhook received" probe message.
+   * Prevents recursive webhook loops.
+   *
+   * @param array<string,mixed> $update
+   * @return bool
+   */
+  function channel_bridge_tg_webhook_is_probe_echo(array $update): bool
+  {
+    if (!function_exists('channel_bridge_extract_tg_text_meta')) {
+      return false;
+    }
+
+    $textMeta = channel_bridge_extract_tg_text_meta($update);
+    if (!$textMeta) {
+      return false;
+    }
+
+    $text = trim((string)($textMeta['text'] ?? ''));
+    if ($text === '') {
+      return false;
+    }
+
+    $textLower = function_exists('mb_strtolower')
+      ? mb_strtolower($text, 'UTF-8')
+      : strtolower($text);
+
+    return (strpos($textLower, 'вэбхук получен #') === 0);
+  }
+}
+
+if (!function_exists('channel_bridge_tg_webhook_source_chat_id')) {
+  /**
+   * Resolves source chat id from update metadata/payload.
+   *
+   * @param array<string,mixed> $updateMeta
+   * @param array<string,mixed> $update
+   * @return string
+   */
+  function channel_bridge_tg_webhook_source_chat_id(array $updateMeta, array $update): string
+  {
+    $chatId = channel_bridge_norm_chat_id((string)($updateMeta['chat_id'] ?? ''));
+    if ($chatId === '' && function_exists('channel_bridge_extract_tg_text_meta')) {
+      $textMeta = channel_bridge_extract_tg_text_meta($update);
+      $chatId = channel_bridge_norm_chat_id((string)($textMeta['chat_id'] ?? ''));
+    }
+    return $chatId;
+  }
+}
+
+if (!function_exists('channel_bridge_tg_webhook_collect_active_routes')) {
+  /**
+   * Collects active routes for source chat.
+   *
+   * @param PDO $pdo
+   * @param array<string,mixed> $updateMeta
+   * @param array<string,mixed> $update
+   * @return array<int,array<string,mixed>>
+   */
+  function channel_bridge_tg_webhook_collect_active_routes(PDO $pdo, array $updateMeta, array $update): array
+  {
+    if (!function_exists('channel_bridge_collect_routes_for_source')) {
+      return [];
+    }
+
+    $chatId = channel_bridge_tg_webhook_source_chat_id($updateMeta, $update);
+    if ($chatId === '') {
+      return [];
+    }
+
+    try {
+      $routes = channel_bridge_collect_routes_for_source($pdo, CHANNEL_BRIDGE_SOURCE_TG, $chatId);
+      return is_array($routes) ? $routes : [];
+    } catch (Throwable $e) {
+      // Never block webhook flow due to probe-side diagnostics.
+      channel_bridge_tg_webhook_log('warn', [
+        'reason' => 'webhook_probe_routes_check_failed',
+        'chat_id' => $chatId,
+        'error' => $e->getMessage(),
+      ]);
+      return [];
+    }
+  }
+}
+
+if (!function_exists('channel_bridge_tg_webhook_notify_received')) {
+  /**
+   * Sends immediate debug message to source chat as soon as webhook arrives.
+   *
+   * @param array<string,mixed> $settings
+   * @param array<string,mixed> $updateMeta
+   * @param array<string,mixed> $update
+   * @param array<int,array<string,mixed>> $activeRoutes
+   * @return void
+   */
+  function channel_bridge_tg_webhook_notify_received(array $settings, array $updateMeta, array $update, array $activeRoutes = []): void
+  {
+    $chatId = channel_bridge_tg_webhook_source_chat_id($updateMeta, $update);
+    if ($chatId === '') {
+      return;
+    }
+
+    $updateId = (int)($updateMeta['update_id'] ?? 0);
+    $probeNo = ($updateId > 0)
+      ? (string)$updateId
+      : (date('His') . '-' . substr(hash('sha1', (string)microtime(true)), 0, 4));
+    $serverTime = date('Y-m-d H:i:s');
+    $probeText = "вэбхук получен #{$probeNo}\nвремя сервера: {$serverTime}";
+
+    $tgToken = trim((string)($settings['tg_bot_token'] ?? ''));
+    if ($tgToken !== '' && function_exists('tg_send_message')) {
+      try {
+        $probeRes = tg_send_message($tgToken, $chatId, $probeText, ['disable_notification' => true]);
+        if (($probeRes['ok'] ?? false) !== true) {
+          channel_bridge_tg_webhook_log('warn', [
+            'reason' => 'webhook_probe_send_failed',
+            'probe_no' => $probeNo,
+            'chat_id' => $chatId,
+            'error' => trim((string)($probeRes['description'] ?? $probeRes['error'] ?? 'send_failed')),
+          ]);
+        }
+      } catch (Throwable $e) {
+        channel_bridge_tg_webhook_log('warn', [
+          'reason' => 'webhook_probe_exception',
+          'probe_no' => $probeNo,
+          'chat_id' => $chatId,
+          'error' => $e->getMessage(),
+        ]);
+      }
+    }
+
+    $maxCandidates = 0;
+    $maxSent = 0;
+    $maxFailed = 0;
+    foreach ($activeRoutes as $route) {
+      $target = channel_bridge_norm_platform((string)($route['target_platform'] ?? ''));
+      if ($target !== CHANNEL_BRIDGE_TARGET_MAX) {
+        continue;
+      }
+      $maxCandidates++;
+      $maxRes = channel_bridge_send_max($settings, (array)$route, $probeText, [
+        'source_platform' => CHANNEL_BRIDGE_SOURCE_TG,
+        'source_chat_id' => $chatId,
+        'source_message_id' => '',
+      ]);
+      if (($maxRes['ok'] ?? false) === true) {
+        $maxSent++;
+        continue;
+      }
+      $maxFailed++;
+      channel_bridge_tg_webhook_log('warn', [
+        'reason' => 'webhook_probe_max_send_failed',
+        'probe_no' => $probeNo,
+        'route_id' => (int)($route['id'] ?? 0),
+        'target_chat_id' => trim((string)($route['target_chat_id'] ?? '')),
+        'error' => trim((string)($maxRes['error'] ?? 'MAX_SEND_FAILED')),
+      ]);
+    }
+    if ($maxCandidates > 0) {
+      channel_bridge_tg_webhook_log('info', [
+        'reason' => 'webhook_probe_max_summary',
+        'probe_no' => $probeNo,
+        'max_candidates' => $maxCandidates,
+        'max_sent' => $maxSent,
+        'max_failed' => $maxFailed,
+      ]);
+    }
+  }
+}
+
 try {
   $tsStart = microtime(true);
   $tsReceived = 0.0;
   $tsDedup = 0.0;
   $tsStateSaved = 0.0;
   $tsJobCreated = 0.0;
-  $deferredWorker = [
+  $deferredSpawn = [
     'enabled' => false,
-    'max_seconds' => 8,
-    'max_jobs' => 20,
+    'options' => [],
   ];
 
-  register_shutdown_function(function () use (&$deferredWorker): void {
-    if (($deferredWorker['enabled'] ?? false) !== true) {
+  register_shutdown_function(function () use (&$deferredSpawn): void {
+    if (($deferredSpawn['enabled'] ?? false) !== true) {
       return;
     }
-    if (!function_exists('channel_bridge_jobs_run_worker_loop')) {
+    if (!function_exists('channel_bridge_jobs_spawn_worker_async')) {
       return;
     }
 
@@ -118,28 +288,17 @@ try {
     }
 
     try {
-      $pdo = db();
-      channel_bridge_tg_webhook_apply_db_timeouts($pdo);
-      $settings = channel_bridge_settings_get($pdo);
-      $maxSeconds = max(1, min(30, (int)($deferredWorker['max_seconds'] ?? 8)));
-      $maxJobs = max(1, min(200, (int)($deferredWorker['max_jobs'] ?? 20)));
-      $workerResult = channel_bridge_jobs_run_worker_loop($pdo, $settings, [
-        'max_seconds' => $maxSeconds,
-        'max_jobs' => $maxJobs,
-      ]);
+      $spawnOptions = is_array($deferredSpawn['options'] ?? null) ? (array)$deferredSpawn['options'] : [];
+      $spawnResult = channel_bridge_jobs_spawn_worker_async($spawnOptions);
       channel_bridge_jobs_audit('worker_run', 'info', [
-        'internal' => 1,
-        'mode' => 'shutdown_local',
-        'max_seconds' => $maxSeconds,
-        'max_jobs' => $maxJobs,
-        'claimed' => (int)($workerResult['claimed'] ?? 0),
-        'done' => (int)($workerResult['done'] ?? 0),
-        'retried' => (int)($workerResult['retried'] ?? 0),
-        'failed' => (int)($workerResult['failed'] ?? 0),
+        'mode' => 'shutdown_spawn',
+        'spawn_ok' => (($spawnResult['ok'] ?? false) === true ? 1 : 0),
+        'spawn_error' => trim((string)($spawnResult['error'] ?? '')),
+        'spawn_endpoint' => trim((string)($spawnResult['endpoint'] ?? '')),
       ]);
     } catch (Throwable $e) {
       channel_bridge_jobs_audit('worker_run', 'error', [
-        'reason' => 'shutdown_local_exception',
+        'reason' => 'shutdown_spawn_exception',
         'error' => $e->getMessage(),
       ]);
     }
@@ -171,6 +330,30 @@ try {
   }
 
   $updateMeta = channel_bridge_extract_tg_update_meta($update);
+  if (channel_bridge_tg_webhook_is_probe_echo($update)) {
+    json_ok(['ok' => true, 'handled' => false, 'reason' => 'webhook_probe_echo']);
+  }
+
+  $probeEnabled = ((int)($settings['webhook_probe_enabled'] ?? 1) === 1);
+  if ($probeEnabled && $internalKeyOk) {
+    $probeRoutes = channel_bridge_tg_webhook_collect_active_routes($pdo, $updateMeta, $update);
+    if ($probeRoutes) {
+      channel_bridge_tg_webhook_notify_received($settings, $updateMeta, $update, $probeRoutes);
+    } else {
+      channel_bridge_tg_webhook_log('info', [
+        'reason' => 'webhook_probe_skipped_no_active_routes',
+        'chat_id' => channel_bridge_tg_webhook_source_chat_id($updateMeta, $update),
+        'update_id' => (int)($updateMeta['update_id'] ?? 0),
+      ]);
+    }
+  } elseif (!$probeEnabled && $internalKeyOk) {
+    channel_bridge_tg_webhook_log('info', [
+      'reason' => 'webhook_probe_disabled',
+      'chat_id' => channel_bridge_tg_webhook_source_chat_id($updateMeta, $update),
+      'update_id' => (int)($updateMeta['update_id'] ?? 0),
+    ]);
+  }
+
   if ($updateMeta) {
     $updateReg = channel_bridge_webhook_update_register($pdo, $updateMeta);
     $tsDedup = microtime(true);
@@ -323,47 +506,68 @@ try {
               'source_message_id' => $sourceMessageId,
               'tg_update_id' => (int)($updateMeta['update_id'] ?? 0),
             ];
-            $enqueue = channel_bridge_jobs_enqueue($pdo, $jobType, $jobKey, $jobPayload, 0);
           } else {
-            $jobType = '';
-            $jobKey = '';
-            $spawnStart = microtime(true);
-            $spawn = channel_bridge_tg_state_spawn_finalize($pdo, $sourceChatId, $mediaGroupId);
-            $spawnMs = channel_bridge_tg_webhook_elapsed_ms($spawnStart, microtime(true));
-            channel_bridge_tg_state_spawn_sweeper();
-            $spawnReason = trim((string)($spawn['reason'] ?? ''));
-            $spawnOk = (($spawn['ok'] ?? false) === true);
-            $resultReason = 'finalize_spawn_failed';
-            $spawnEndpoint = 'async_finalize';
-            if ($spawnOk) {
-              if ($spawnReason === 'already_running') {
-                $resultReason = 'finalize_already_running';
-                $spawnEndpoint = 'async_finalize_existing';
-              } elseif ($spawnReason === 'already_sent') {
-                $resultReason = 'media_group_already_sent';
-                $spawnEndpoint = 'async_finalize_sent';
-              } elseif ($spawnReason === 'already_terminal') {
-                $resultReason = 'media_group_terminal';
-                $spawnEndpoint = 'async_finalize_terminal';
+            $jobType = CHANNEL_BRIDGE_JOB_TYPE_ALBUM_FINALIZE;
+            $jobKey = channel_bridge_jobs_make_key($jobType, $sourceChatId, '', $mediaGroupId);
+            $jobPayload = [
+              'source_chat_id' => $sourceChatId,
+              'media_group_id' => $mediaGroupId,
+              'tg_update_id' => (int)($updateMeta['update_id'] ?? 0),
+            ];
+          }
+
+          $enqueue = channel_bridge_jobs_enqueue($pdo, $jobType, $jobKey, $jobPayload, 0);
+          if (($enqueue['ok'] ?? false) !== true) {
+            $result = [
+              'ok' => false,
+              'reason' => 'job_enqueue_failed',
+              'message' => (string)($enqueue['reason'] ?? 'Failed to enqueue job'),
+            ];
+          } else {
+            $tsJobCreated = microtime(true);
+            $queueMode = true;
+            $queueOnly = (defined('CHANNEL_BRIDGE_WEBHOOK_QUEUE_ONLY') && CHANNEL_BRIDGE_WEBHOOK_QUEUE_ONLY);
+            $spawnOk = 0;
+            $spawnErr = $queueOnly ? 'queue_only_mode' : '';
+            $spawnEndpoint = '';
+            $spawnMs = 0;
+            if (!$queueOnly) {
+              $albumWorkerWaitMs = (int)(
+                max(1000, min(
+                  30000,
+                  CHANNEL_BRIDGE_JOBS_ALBUM_WAIT_SECOND_MS + CHANNEL_BRIDGE_JOBS_ALBUM_QUIET_AFTER_SECOND_MS + 2000
+                ))
+              );
+              if (function_exists('channel_bridge_jobs_spawn_worker_async')) {
+                $deferredSpawn['enabled'] = true;
+                $deferredSpawn['options'] = [
+                  'max_seconds' => 25,
+                  'max_jobs' => 20,
+                  // Fire async worker after webhook response to keep webhook path non-blocking.
+                  'idle_wait_first_claim_ms' => $albumWorkerWaitMs,
+                  'idle_wait_after_work_ms' => $albumWorkerWaitMs,
+                  'timeout' => 0.20,
+                ];
+                $spawnOk = 1;
+                $spawnErr = '';
+                $spawnEndpoint = 'shutdown_spawn';
               } else {
-                $resultReason = 'finalize_spawned';
+                $spawnErr = 'worker_spawn_unavailable';
               }
             }
-            $queueMode = true;
             $result = [
-              'ok' => $spawnOk,
-              'reason' => $resultReason,
-              'message' => $spawnOk ? '' : (string)($spawn['error'] ?? 'Failed to spawn finalize'),
+              'ok' => true,
+              'reason' => 'job_created',
               'targets' => 0,
               'sent' => 0,
               'failed' => 0,
-              'job_type' => '',
-              'job_key' => '',
-              'job_created' => 0,
+              'job_type' => $jobType,
+              'job_key' => $jobKey,
+              'job_created' => (int)($enqueue['created'] ?? 0),
               'active_routes' => count($activeRoutes),
-              'queue_only' => 0,
-              'worker_spawn_ok' => $spawnOk ? 1 : 0,
-              'worker_spawn_error' => $spawnOk ? '' : (string)($spawn['error'] ?? 'spawn_failed'),
+              'queue_only' => $queueOnly ? 1 : 0,
+              'worker_spawn_ok' => $spawnOk,
+              'worker_spawn_error' => $spawnErr,
               'worker_spawn_endpoint' => $spawnEndpoint,
               'worker_spawn_ms' => $spawnMs,
               'worker_inline_fallback' => 0,
@@ -377,64 +581,6 @@ try {
               'active_vk_route_ids' => (array)($routeDebug['active_vk_route_ids'] ?? []),
               'vk_candidates' => (array)($routeDebug['vk_candidates'] ?? []),
             ];
-          }
-
-          if ($mediaGroupId === '') {
-            if (($enqueue['ok'] ?? false) !== true) {
-              $result = [
-                'ok' => false,
-                'reason' => 'job_enqueue_failed',
-                'message' => (string)($enqueue['reason'] ?? 'Failed to enqueue job'),
-              ];
-            } else {
-              $tsJobCreated = microtime(true);
-              $queueMode = true;
-              $queueOnly = (defined('CHANNEL_BRIDGE_WEBHOOK_QUEUE_ONLY') && CHANNEL_BRIDGE_WEBHOOK_QUEUE_ONLY);
-              $spawnOk = 0;
-              $spawnErr = $queueOnly ? 'queue_only_mode' : '';
-              $spawnEndpoint = '';
-              $spawnMs = 0;
-              if (!$queueOnly) {
-                if (function_exists('channel_bridge_jobs_run_worker_loop')) {
-                  $deferredWorker['enabled'] = true;
-                  $deferredWorker['max_seconds'] = 8;
-                  $deferredWorker['max_jobs'] = 20;
-                  $spawnOk = 1;
-                  $spawnErr = '';
-                  $spawnEndpoint = 'shutdown_local';
-                } else {
-                  $spawnErr = 'worker_local_unavailable';
-                }
-              }
-              $result = [
-                'ok' => true,
-                'reason' => 'job_created',
-                'targets' => 0,
-                'sent' => 0,
-                'failed' => 0,
-                'job_type' => $jobType,
-                'job_key' => $jobKey,
-                'job_created' => (int)($enqueue['created'] ?? 0),
-                'active_routes' => count($activeRoutes),
-                'queue_only' => $queueOnly ? 1 : 0,
-                'worker_spawn_ok' => $spawnOk,
-                'worker_spawn_error' => $spawnErr,
-                'worker_spawn_endpoint' => $spawnEndpoint,
-                'worker_spawn_ms' => $spawnMs,
-                'worker_inline_fallback' => 0,
-                'worker_inline_claimed' => 0,
-                'worker_inline_done' => 0,
-                'worker_inline_error' => '',
-                'source_chat_id' => $sourceChatId,
-                'source_message_id' => $sourceMessageId,
-                'media_group_id' => $mediaGroupId,
-                'active_route_ids' => $activeRouteIds,
-                'active_vk_route_ids' => (array)($routeDebug['active_vk_route_ids'] ?? []),
-                'vk_candidates' => (array)($routeDebug['vk_candidates'] ?? []),
-              ];
-            }
-          } else {
-            $tsJobCreated = microtime(true);
           }
         }
       }

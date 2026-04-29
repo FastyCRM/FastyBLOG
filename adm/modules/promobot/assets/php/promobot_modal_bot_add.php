@@ -19,6 +19,8 @@ if (!promobot_is_manage_role($roles)) {
 }
 
 $csrf = csrf_token();
+$pdo = db();
+$promoSourceBots = promobot_bot_promo_source_options($pdo, 0);
 
 $platforms = [
   PROMOBOT_PLATFORM_TG => promobot_t('promobot.platform_tg'),
@@ -46,6 +48,26 @@ ob_start();
         <select class="select" name="platform" required>
           <?php foreach ($platforms as $code => $label): ?>
             <option value="<?= h($code) ?>"><?= h($label) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </label>
+
+      <label class="field field--stack">
+        <span class="field__label"><?= h(promobot_t('promobot.field_promo_source_bot')) ?></span>
+        <select class="select" name="promo_source_bot_id">
+          <option value="0"><?= h(promobot_t('promobot.promo_source_self')) ?></option>
+          <?php foreach ($promoSourceBots as $sourceBot): ?>
+            <?php
+              $sourceBotId = (int)($sourceBot['id'] ?? 0);
+              $sourceBotName = trim((string)($sourceBot['name'] ?? ''));
+              $sourcePlatform = (string)($sourceBot['platform'] ?? '');
+              $sourcePlatformLabel = ($sourcePlatform === PROMOBOT_PLATFORM_MAX)
+                ? promobot_t('promobot.platform_max')
+                : promobot_t('promobot.platform_tg');
+            ?>
+            <option value="<?= (int)$sourceBotId ?>">
+              <?= h($sourceBotName !== '' ? $sourceBotName : ('#' . $sourceBotId)) ?> (<?= h($sourcePlatformLabel) ?>)
+            </option>
           <?php endforeach; ?>
         </select>
       </label>

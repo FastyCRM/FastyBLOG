@@ -59,6 +59,8 @@ return [
   'channel_bridge.field_tg_parse_mode' => 'TG parse mode',
   'channel_bridge.field_apply_webhook' => 'После сохранения применить webhook в Telegram',
   'channel_bridge.field_apply_webhook_hint' => 'Webhook будет установлен на URL текущего домена.',
+  'channel_bridge.field_webhook_probe_enabled' => 'Отправлять служебное уведомление при получении webhook',
+  'channel_bridge.field_webhook_probe_enabled_hint' => 'Показывает "вэбхук получен #..." с серверным временем: в Telegram (источник) и в MAX (по активным MAX-маршрутам).',
   'channel_bridge.webhook_refresh_hint' => 'Можно обновить webhook отдельно, не пересохраняя остальные настройки.',
   'channel_bridge.btn_tg_probe' => 'Проверить TG и загрузить чаты',
   'channel_bridge.btn_webhook_refresh' => 'Обновить webhook',

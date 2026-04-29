@@ -21,6 +21,7 @@ if ($method !== 'POST') {
 csrf_check((string)($_POST['csrf'] ?? ''));
 
 $promoId = (int)($_POST['id'] ?? 0);
+$contextBotId = (int)($_POST['bot_id'] ?? 0);
 $pdo = db();
 $promo = promobot_promo_get($pdo, $promoId);
 if (!$promo) {
@@ -32,7 +33,18 @@ $botId = (int)($promo['bot_id'] ?? 0);
 $uid = (int)(function_exists('auth_user_id') ? auth_user_id() : 0);
 $roles = function_exists('auth_user_roles') ? (array)auth_user_roles($uid) : [];
 
-if (!promobot_user_has_bot_access($pdo, $uid, $botId, $roles)) {
+$redirectBotId = $botId;
+if ($contextBotId > 0) {
+  $redirectBotId = $contextBotId;
+  if (!promobot_promo_belongs_to_context($pdo, $promo, $contextBotId)) {
+    flash(promobot_t('promobot.flash_promo_not_found'), 'danger', 1);
+    redirect_return('/adm/index.php?m=' . PROMOBOT_MODULE_CODE . '&bot_id=' . $redirectBotId);
+  }
+  if (!promobot_user_has_bot_access($pdo, $uid, $contextBotId, $roles)) {
+    flash(promobot_t('promobot.flash_access_denied'), 'danger', 1);
+    redirect_return('/adm/index.php?m=' . PROMOBOT_MODULE_CODE . '&bot_id=' . $redirectBotId);
+  }
+} elseif (!promobot_user_has_bot_access($pdo, $uid, $botId, $roles)) {
   flash(promobot_t('promobot.flash_access_denied'), 'danger', 1);
   redirect_return('/adm/index.php?m=' . PROMOBOT_MODULE_CODE);
 }
@@ -52,9 +64,10 @@ $role = function_exists('auth_user_role') ? (string)auth_user_role() : '';
 audit_log(PROMOBOT_MODULE_CODE, 'promo_toggle', 'info', [
   'promo_id' => $promoId,
   'bot_id' => $botId,
+  'context_bot_id' => $redirectBotId,
   'enabled' => $enabled,
 ], PROMOBOT_MODULE_CODE, null, $uid, $role);
 
 flash($enabled ? promobot_t('promobot.flash_promo_enabled') : promobot_t('promobot.flash_promo_disabled'), 'ok');
 
-redirect_return('/adm/index.php?m=' . PROMOBOT_MODULE_CODE . '&bot_id=' . $botId);
+redirect_return('/adm/index.php?m=' . PROMOBOT_MODULE_CODE . '&bot_id=' . $redirectBotId);

@@ -34,6 +34,12 @@ if (!promobot_user_has_bot_access($pdo, $uid, $botId, $roles)) {
   redirect_return('/adm/index.php?m=' . PROMOBOT_MODULE_CODE);
 }
 
+$promoOwnerBotId = promobot_bot_promo_owner_id($pdo, $botId);
+if ($promoOwnerBotId <= 0) {
+  flash(promobot_t('promobot.flash_bot_not_found'), 'danger', 1);
+  redirect_return('/adm/index.php?m=' . PROMOBOT_MODULE_CODE);
+}
+
 if ($keywords === '' || $responseText === '') {
   flash(promobot_t('promobot.flash_promo_required'), 'danger', 1);
   redirect_return('/adm/index.php?m=' . PROMOBOT_MODULE_CODE . '&bot_id=' . $botId);
@@ -44,7 +50,7 @@ $pdo->prepare("\n  INSERT INTO " . PROMOBOT_TABLE_PROMOS . "
   VALUES
     (:bot_id, :keywords, :response_text, :is_active, :created_by, :updated_by)
 ")->execute([
-  ':bot_id' => $botId,
+  ':bot_id' => $promoOwnerBotId,
   ':keywords' => $keywords,
   ':response_text' => $responseText,
   ':is_active' => $isActive,
@@ -57,7 +63,8 @@ $role = function_exists('auth_user_role') ? (string)auth_user_role() : '';
 
 audit_log(PROMOBOT_MODULE_CODE, 'promo_add', 'info', [
   'promo_id' => $promoId,
-  'bot_id' => $botId,
+  'bot_id' => $promoOwnerBotId,
+  'context_bot_id' => $botId,
 ], PROMOBOT_MODULE_CODE, null, $uid, $role);
 
 flash(promobot_t('promobot.flash_promo_added'), 'ok');

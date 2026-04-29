@@ -598,19 +598,29 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
   }
 
   /**
-   * Claims album for queue flow when quiet window is reached.
+   * Claims album for queue flow when quiet window after last webhook is reached.
    *
    * @param PDO $pdo
    * @param string $sourceChatId
    * @param string $mediaGroupId
-   * @param int $quietMs
+   * @param int $waitSecondMs
+   * @param int $quietAfterSecondMs
    * @return array<string,mixed>
    */
-  function channel_bridge_tg_state_album_try_claim_queue(PDO $pdo, string $sourceChatId, string $mediaGroupId, int $quietMs): array
+  function channel_bridge_tg_state_album_try_claim_queue(
+    PDO $pdo,
+    string $sourceChatId,
+    string $mediaGroupId,
+    int $waitSecondMs,
+    int $quietAfterSecondMs
+  ): array
   {
     $sourceChatId = channel_bridge_norm_chat_id($sourceChatId);
     $mediaGroupId = trim($mediaGroupId);
-    $quietMs = max(200, min(20000, $quietMs));
+    $waitSecondMs = max(500, min(30000, $waitSecondMs));
+    $quietAfterSecondMs = max(200, min(10000, $quietAfterSecondMs));
+    $pollDelaySec = max(1, (int)(defined('CHANNEL_BRIDGE_JOBS_ALBUM_POLL_SECONDS') ? CHANNEL_BRIDGE_JOBS_ALBUM_POLL_SECONDS : 2));
+    $maxWaitMs = max(5000, (int)(defined('CHANNEL_BRIDGE_JOBS_ALBUM_MAX_WAIT_MS') ? CHANNEL_BRIDGE_JOBS_ALBUM_MAX_WAIT_MS : 60000));
     if ($sourceChatId === '' || $mediaGroupId === '') {
       return ['mode' => 'error', 'error' => 'bad_meta'];
     }
@@ -659,7 +669,7 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
 
       if ($dispatchStatus === 'dispatching') {
         $pdo->commit();
-        return ['mode' => 'pending', 'reason' => 'dispatching'];
+        return ['mode' => 'pending', 'reason' => 'dispatching', 'delay_seconds' => $pollDelaySec];
       }
 
       $itemsCount = (int)($row['items_count'] ?? 0);
@@ -676,28 +686,61 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
       }
       $idleMs = max(0, (int)round((microtime(true) - $lastSeenTs) * 1000));
       $ageMs = max(0, (int)round((microtime(true) - $firstSeenTs) * 1000));
-      if ($itemsCount < (int)CHANNEL_BRIDGE_MEDIA_GROUP_MIN_ITEMS) {
+      $forceByAge = ($ageMs >= $maxWaitMs);
+      if ($itemsCount < 1) {
         $pdo->commit();
         return [
           'mode' => 'pending',
           'reason' => 'await_more_items',
           'idle_ms' => $idleMs,
           'age_ms' => $ageMs,
-          'min_items' => (int)CHANNEL_BRIDGE_MEDIA_GROUP_MIN_ITEMS,
+          'min_items' => 1,
+          'delay_seconds' => $pollDelaySec,
         ];
       }
-      if ($ageMs < CHANNEL_BRIDGE_MEDIA_GROUP_MIN_AGE_MS) {
+
+      $requiredQuietMs = ($itemsCount >= 2) ? $quietAfterSecondMs : ($waitSecondMs + $quietAfterSecondMs);
+
+      if ($itemsCount < 2 && !$forceByAge) {
+        if ($idleMs < $waitSecondMs) {
+          $remainingMs = max(0, $waitSecondMs - $idleMs);
+          $pdo->commit();
+          return [
+            'mode' => 'pending',
+            'reason' => 'await_second_initial_window',
+            'idle_ms' => $idleMs,
+            'age_ms' => $ageMs,
+            'required_quiet_ms' => $waitSecondMs,
+            'items_count' => $itemsCount,
+            'delay_seconds' => min(max(1, (int)ceil($remainingMs / 1000)), $pollDelaySec),
+          ];
+        }
+
+        if ($idleMs < ($waitSecondMs + $quietAfterSecondMs)) {
+          $pdo->commit();
+          return [
+            'mode' => 'pending',
+            'reason' => 'await_second_grace_window',
+            'idle_ms' => $idleMs,
+            'age_ms' => $ageMs,
+            'required_quiet_ms' => ($waitSecondMs + $quietAfterSecondMs),
+            'items_count' => $itemsCount,
+            'delay_seconds' => $pollDelaySec,
+          ];
+        }
+      }
+      if ($idleMs < $requiredQuietMs && !$forceByAge) {
+        $remainingMs = max(0, $requiredQuietMs - $idleMs);
         $pdo->commit();
         return [
           'mode' => 'pending',
-          'reason' => 'await_window',
+          'reason' => 'await_quiet_window',
           'idle_ms' => $idleMs,
           'age_ms' => $ageMs,
+          'required_quiet_ms' => $requiredQuietMs,
+          'items_count' => $itemsCount,
+          'delay_seconds' => min(max(1, (int)ceil($remainingMs / 1000)), $pollDelaySec),
         ];
-      }
-      if ($idleMs < $quietMs) {
-        $pdo->commit();
-        return ['mode' => 'pending', 'reason' => 'await_idle', 'idle_ms' => $idleMs, 'age_ms' => $ageMs];
       }
 
       $dispatchToken = hash('sha256', $sourceChatId . '|' . $mediaGroupId . '|' . microtime(true) . '|' . mt_rand(1, PHP_INT_MAX));
@@ -725,6 +768,10 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
         'photos_total' => $photosTotal,
         'photos_downloaded' => $photosDownloaded,
         'photos_failed' => $photosFailed,
+        'required_quiet_ms' => $requiredQuietMs,
+        'items_count' => $itemsCount,
+        'force_by_age' => $forceByAge ? 1 : 0,
+        'max_wait_ms' => $maxWaitMs,
       ];
     } catch (Throwable $e) {
       if ($pdo->inTransaction()) {
@@ -744,6 +791,8 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
    */
   function channel_bridge_jobs_handle_claimed_job(PDO $pdo, array $settings, array $job): array
   {
+    static $finalizeKickDepth = 0;
+
     $jobType = trim((string)($job['job_type'] ?? ''));
     $payload = is_array($job['payload'] ?? null) ? (array)$job['payload'] : [];
     $sourceChatId = channel_bridge_norm_chat_id((string)($payload['source_chat_id'] ?? ''));
@@ -771,13 +820,23 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
         return ['status' => 'failed', 'reason' => 'bad_meta', 'error' => 'album finalize meta required'];
       }
 
-      $claim = channel_bridge_tg_state_album_try_claim_queue($pdo, $sourceChatId, $mediaGroupId, CHANNEL_BRIDGE_JOBS_ALBUM_QUIET_MS);
+      $claim = channel_bridge_tg_state_album_try_claim_queue(
+        $pdo,
+        $sourceChatId,
+        $mediaGroupId,
+        CHANNEL_BRIDGE_JOBS_ALBUM_WAIT_SECOND_MS,
+        CHANNEL_BRIDGE_JOBS_ALBUM_QUIET_AFTER_SECOND_MS
+      );
       $mode = trim((string)($claim['mode'] ?? ''));
       if ($mode === 'sent') {
         return ['status' => 'done', 'reason' => 'already_sent'];
       }
       if ($mode === 'pending') {
-        return ['status' => 'pending', 'reason' => trim((string)($claim['reason'] ?? 'await_idle')), 'delay_seconds' => 1];
+        return [
+          'status' => 'pending',
+          'reason' => trim((string)($claim['reason'] ?? 'await_quiet_window')),
+          'delay_seconds' => max(1, (int)($claim['delay_seconds'] ?? 5)),
+        ];
       }
       if ($mode !== 'ready') {
         $error = trim((string)($claim['error'] ?? 'album_claim_failed'));
@@ -796,6 +855,60 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
       $enq = channel_bridge_jobs_enqueue($pdo, CHANNEL_BRIDGE_JOB_TYPE_ALBUM_PUBLISH, $publishKey, $publishPayload, 0);
       if (($enq['ok'] ?? false) !== true) {
         return ['status' => 'retry', 'reason' => 'album_publish_enqueue_failed', 'error' => trim((string)($enq['reason'] ?? 'enqueue_failed'))];
+      }
+
+      $kickSpawn = channel_bridge_jobs_spawn_worker_async([
+        'max_seconds' => 12,
+        'max_jobs' => 20,
+        'idle_wait_first_claim_ms' => 1500,
+        'idle_wait_after_work_ms' => 1500,
+        'timeout' => 0.20,
+      ]);
+      channel_bridge_jobs_audit(
+        'finalize_publish_kick_spawn',
+        (($kickSpawn['ok'] ?? false) === true ? 'info' : 'warn'),
+        [
+          'job_key' => $publishKey,
+          'spawn_ok' => (($kickSpawn['ok'] ?? false) === true ? 1 : 0),
+          'spawn_error' => trim((string)($kickSpawn['error'] ?? '')),
+          'spawn_endpoint' => trim((string)($kickSpawn['endpoint'] ?? '')),
+          'kick_depth' => (int)$finalizeKickDepth,
+        ]
+      );
+
+      if ($finalizeKickDepth <= 0) {
+        $finalizeKickDepth++;
+        try {
+          $kickLocal = channel_bridge_jobs_run_worker_loop($pdo, $settings, [
+            'max_seconds' => 10,
+            'max_jobs' => 20,
+            'idle_wait_first_claim_ms' => 1500,
+            'idle_wait_after_work_ms' => 1500,
+            'allow_local_followup' => false,
+          ]);
+          channel_bridge_jobs_audit('finalize_publish_kick_local', 'info', [
+            'job_key' => $publishKey,
+            'claimed' => (int)($kickLocal['claimed'] ?? 0),
+            'done' => (int)($kickLocal['done'] ?? 0),
+            'retried' => (int)($kickLocal['retried'] ?? 0),
+            'failed' => (int)($kickLocal['failed'] ?? 0),
+            'pending' => (int)($kickLocal['pending'] ?? 0),
+          ]);
+        } catch (Throwable $kickError) {
+          channel_bridge_jobs_audit('finalize_publish_kick_local', 'warn', [
+            'job_key' => $publishKey,
+            'error' => trim($kickError->getMessage()),
+          ]);
+        } finally {
+          $finalizeKickDepth--;
+        }
+      } else {
+        channel_bridge_jobs_audit('finalize_publish_kick_local', 'info', [
+          'job_key' => $publishKey,
+          'skipped' => 1,
+          'reason' => 'nested_finalize',
+          'kick_depth' => (int)$finalizeKickDepth,
+        ]);
       }
 
       return ['status' => 'done', 'reason' => 'album_publish_enqueued'];
@@ -819,13 +932,23 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
     }
 
     if ($dispatchToken === '') {
-      $claim = channel_bridge_tg_state_album_try_claim_queue($pdo, $sourceChatId, $mediaGroupId, CHANNEL_BRIDGE_JOBS_ALBUM_QUIET_MS);
+      $claim = channel_bridge_tg_state_album_try_claim_queue(
+        $pdo,
+        $sourceChatId,
+        $mediaGroupId,
+        CHANNEL_BRIDGE_JOBS_ALBUM_WAIT_SECOND_MS,
+        CHANNEL_BRIDGE_JOBS_ALBUM_QUIET_AFTER_SECOND_MS
+      );
       $mode = trim((string)($claim['mode'] ?? ''));
       if ($mode === 'sent') {
         return ['status' => 'done', 'reason' => 'already_sent'];
       }
       if ($mode === 'pending') {
-        return ['status' => 'pending', 'reason' => trim((string)($claim['reason'] ?? 'await_idle')), 'delay_seconds' => 1];
+        return [
+          'status' => 'pending',
+          'reason' => trim((string)($claim['reason'] ?? 'await_quiet_window')),
+          'delay_seconds' => max(1, (int)($claim['delay_seconds'] ?? 5)),
+        ];
       }
       if ($mode !== 'ready') {
         $error = trim((string)($claim['error'] ?? 'album_claim_failed'));
@@ -849,7 +972,16 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
     $dispatchPayload = channel_bridge_tg_preload_photos($settings, $dispatchPayload);
     channel_bridge_jobs_sync_tg_photo_state($pdo, $dispatchPayload);
 
-    $classified = channel_bridge_jobs_classify_ingest_result(channel_bridge_ingest($pdo, $dispatchPayload));
+    $ingestResult = channel_bridge_ingest($pdo, $dispatchPayload);
+    $classified = channel_bridge_jobs_classify_ingest_result($ingestResult);
+    $ingestReason = trim((string)($ingestResult['reason'] ?? ''));
+    if ($ingestReason === 'skip_no_photo') {
+      $classified = [
+        'status' => 'failed',
+        'reason' => 'album_no_photo',
+        'error' => 'album_no_photo',
+      ];
+    }
     $classified['payload'] = $payload;
     if (trim((string)($classified['status'] ?? '')) === 'done') {
       if ($dispatchToken !== '') {
@@ -878,11 +1010,12 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
    */
   function channel_bridge_jobs_run_worker_loop(PDO $pdo, array $settings, array $options = []): array
   {
-    $maxSeconds = max(1, min(30, (int)($options['max_seconds'] ?? 8)));
+    $maxSeconds = max(1, min(30, (int)($options['max_seconds'] ?? 20)));
     $maxJobs = max(1, min(200, (int)($options['max_jobs'] ?? 25)));
     $idleSleepUs = max(50000, min(500000, (int)($options['idle_sleep_us'] ?? 200000)));
-    $idleWaitFirstClaimMs = max(200, min(3000, (int)($options['idle_wait_first_claim_ms'] ?? 1500)));
-    $idleWaitAfterWorkMs = max(100, min(2000, (int)($options['idle_wait_after_work_ms'] ?? 500)));
+    $idleWaitFirstClaimMs = max(200, min(30000, (int)($options['idle_wait_first_claim_ms'] ?? 300)));
+    $idleWaitAfterWorkMs = max(100, min(30000, (int)($options['idle_wait_after_work_ms'] ?? 3500)));
+    $allowLocalFollowup = (($options['allow_local_followup'] ?? true) !== false);
     $workerId = trim((string)($options['worker_id'] ?? ''));
     if ($workerId === '') {
       $workerId = 'cbw-' . getmypid() . '-' . substr(sha1((string)microtime(true)), 0, 8);
@@ -895,6 +1028,7 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
     $retried = 0;
     $failed = 0;
     $pending = 0;
+    $pendingMinDelaySec = 0;
     $idleSince = 0.0;
 
     while ($claimed < $maxJobs && microtime(true) < $deadline) {
@@ -938,6 +1072,9 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
         $delay = max(1, (int)($result['delay_seconds'] ?? 1));
         channel_bridge_jobs_requeue($pdo, $jobId, ($reason !== '' ? $reason : 'pending'), $delay, false, '', $payloadOverride);
         $pending++;
+        if ($pendingMinDelaySec <= 0 || $delay < $pendingMinDelaySec) {
+          $pendingMinDelaySec = $delay;
+        }
         continue;
       }
 
@@ -976,6 +1113,107 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
       channel_bridge_jobs_audit('failed', 'error', ['job_id' => $jobId, 'job_type' => $jobType, 'job_key' => $jobKey, 'reason' => $reason, 'error' => $error]);
     }
 
+    $followupSpawn = ['ok' => false, 'error' => '', 'endpoint' => ''];
+    $followupLocal = ['ok' => false, 'claimed' => 0, 'done' => 0, 'retried' => 0, 'failed' => 0, 'pending' => 0, 'rounds' => 0, 'error' => ''];
+    if ($pending > 0 && $pendingMinDelaySec > 0) {
+      $followupWaitMs = max(1000, min(30000, $pendingMinDelaySec * 1000));
+      $followupSpawn = channel_bridge_jobs_spawn_worker_async([
+        'max_seconds' => max(5, min(30, $pendingMinDelaySec + 5)),
+        'max_jobs' => $maxJobs,
+        'idle_wait_first_claim_ms' => $followupWaitMs,
+        'idle_wait_after_work_ms' => $followupWaitMs,
+        'timeout' => 0.20,
+      ]);
+      channel_bridge_jobs_audit(
+        'worker_followup_spawn',
+        (($followupSpawn['ok'] ?? false) === true ? 'info' : 'warn'),
+        [
+          'pending_jobs' => $pending,
+          'pending_min_delay_sec' => $pendingMinDelaySec,
+          'spawn_ok' => (($followupSpawn['ok'] ?? false) === true ? 1 : 0),
+          'spawn_error' => trim((string)($followupSpawn['error'] ?? '')),
+          'spawn_endpoint' => trim((string)($followupSpawn['endpoint'] ?? '')),
+        ]
+      );
+
+      // Deterministic in-process follow-up: processes due jobs even when async spawn does not run.
+      if ($allowLocalFollowup) {
+        try {
+          $roundMax = 3;
+          $round = 0;
+          $localPending = $pending;
+          $localDelaySec = $pendingMinDelaySec;
+          $accClaimed = 0;
+          $accDone = 0;
+          $accRetried = 0;
+          $accFailed = 0;
+          while ($localPending > 0 && $round < $roundMax) {
+            $round++;
+            $roundWaitMs = max(1000, min(30000, $localDelaySec * 1000));
+            $local = channel_bridge_jobs_run_worker_loop($pdo, $settings, [
+              'max_seconds' => max(5, min(30, $localDelaySec + 6)),
+              'max_jobs' => $maxJobs,
+              'idle_wait_first_claim_ms' => $roundWaitMs,
+              'idle_wait_after_work_ms' => $roundWaitMs,
+              'allow_local_followup' => false,
+            ]);
+            $accClaimed += (int)($local['claimed'] ?? 0);
+            $accDone += (int)($local['done'] ?? 0);
+            $accRetried += (int)($local['retried'] ?? 0);
+            $accFailed += (int)($local['failed'] ?? 0);
+            $localPending = max(0, (int)($local['pending'] ?? 0));
+            $localDelaySec = max(1, (int)($local['pending_min_delay_sec'] ?? 1));
+            channel_bridge_jobs_audit('worker_followup_local_round', 'info', [
+              'round' => $round,
+              'pending_before' => ($round === 1 ? $pending : null),
+              'pending_after' => $localPending,
+              'next_delay_sec' => $localDelaySec,
+              'claimed' => (int)($local['claimed'] ?? 0),
+              'done' => (int)($local['done'] ?? 0),
+              'retried' => (int)($local['retried'] ?? 0),
+              'failed' => (int)($local['failed'] ?? 0),
+            ]);
+          }
+          $followupLocal = [
+            'ok' => true,
+            'claimed' => $accClaimed,
+            'done' => $accDone,
+            'retried' => $accRetried,
+            'failed' => $accFailed,
+            'pending' => $localPending,
+            'rounds' => $round,
+            'error' => '',
+          ];
+          channel_bridge_jobs_audit('worker_followup_local', 'info', [
+            'pending_jobs' => $pending,
+            'pending_min_delay_sec' => $pendingMinDelaySec,
+            'claimed' => $followupLocal['claimed'],
+            'done' => $followupLocal['done'],
+            'retried' => $followupLocal['retried'],
+            'failed' => $followupLocal['failed'],
+            'pending_after' => $followupLocal['pending'],
+            'rounds' => $followupLocal['rounds'],
+          ]);
+        } catch (Throwable $followupError) {
+          $followupLocal = [
+            'ok' => false,
+            'claimed' => 0,
+            'done' => 0,
+            'retried' => 0,
+            'failed' => 0,
+            'pending' => 0,
+            'rounds' => 0,
+            'error' => trim($followupError->getMessage()),
+          ];
+          channel_bridge_jobs_audit('worker_followup_local', 'warn', [
+            'pending_jobs' => $pending,
+            'pending_min_delay_sec' => $pendingMinDelaySec,
+            'error' => $followupLocal['error'],
+          ]);
+        }
+      }
+    }
+
     return [
       'ok' => true,
       'worker_id' => $workerId,
@@ -984,6 +1222,17 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
       'retried' => $retried,
       'failed' => $failed,
       'pending' => $pending,
+      'pending_min_delay_sec' => $pendingMinDelaySec,
+      'followup_spawn_ok' => (($followupSpawn['ok'] ?? false) === true ? 1 : 0),
+      'followup_spawn_error' => trim((string)($followupSpawn['error'] ?? '')),
+      'followup_local_ok' => (($followupLocal['ok'] ?? false) === true ? 1 : 0),
+      'followup_local_claimed' => (int)($followupLocal['claimed'] ?? 0),
+      'followup_local_done' => (int)($followupLocal['done'] ?? 0),
+      'followup_local_retried' => (int)($followupLocal['retried'] ?? 0),
+      'followup_local_failed' => (int)($followupLocal['failed'] ?? 0),
+      'followup_local_pending' => (int)($followupLocal['pending'] ?? 0),
+      'followup_local_rounds' => (int)($followupLocal['rounds'] ?? 0),
+      'followup_local_error' => trim((string)($followupLocal['error'] ?? '')),
       'watchdog_requeued' => (int)($watchdog['requeued'] ?? 0),
       'watchdog_failed' => (int)($watchdog['failed'] ?? 0),
       'finished_at' => channel_bridge_now(),
@@ -1072,16 +1321,24 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
   {
     $token = channel_bridge_jobs_worker_auth_token();
     if ($token === '') {
+      channel_bridge_jobs_audit('worker_spawn', 'warn', [
+        'reason' => 'worker_token_empty',
+      ]);
       return ['ok' => false, 'error' => 'worker_token_empty'];
     }
 
     $baseUrls = channel_bridge_worker_endpoint_candidates(true);
     if (!$baseUrls) {
+      channel_bridge_jobs_audit('worker_spawn', 'warn', [
+        'reason' => 'worker_url_empty',
+      ]);
       return ['ok' => false, 'error' => 'worker_url_empty'];
     }
 
-    $maxSeconds = max(1, min(30, (int)($options['max_seconds'] ?? 8)));
+    $maxSeconds = max(1, min(30, (int)($options['max_seconds'] ?? 20)));
     $maxJobs = max(1, min(200, (int)($options['max_jobs'] ?? 20)));
+    $idleWaitFirstClaimMs = max(200, min(30000, (int)($options['idle_wait_first_claim_ms'] ?? 300)));
+    $idleWaitAfterWorkMs = max(100, min(30000, (int)($options['idle_wait_after_work_ms'] ?? 3500)));
     $timeout = (float)($options['timeout'] ?? 0.20);
     if ($timeout < 0.05) {
       $timeout = 0.05;
@@ -1089,11 +1346,28 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
     if ($timeout > 1.00) {
       $timeout = 1.00;
     }
+    $trace = trim((string)($options['trace'] ?? ''));
+    if ($trace === '') {
+      $trace = 'cbw-' . substr(hash('sha1', (string)microtime(true) . '|' . mt_rand(1, PHP_INT_MAX)), 0, 12);
+    }
     $query = [
       'token' => $token,
       'max_seconds' => $maxSeconds,
       'max_jobs' => $maxJobs,
+      'idle_wait_first_claim_ms' => $idleWaitFirstClaimMs,
+      'idle_wait_after_work_ms' => $idleWaitAfterWorkMs,
+      'trace' => $trace,
     ];
+
+    channel_bridge_jobs_audit('worker_spawn', 'info', [
+      'trace' => $trace,
+      'endpoints' => $baseUrls,
+      'max_seconds' => $maxSeconds,
+      'max_jobs' => $maxJobs,
+      'idle_wait_first_claim_ms' => $idleWaitFirstClaimMs,
+      'idle_wait_after_work_ms' => $idleWaitAfterWorkMs,
+      'timeout' => $timeout,
+    ]);
 
     $last = ['ok' => false, 'error' => 'worker_spawn_failed'];
     foreach ($baseUrls as $baseUrl) {
@@ -1102,14 +1376,26 @@ if (!function_exists('channel_bridge_jobs_table_available')) {
       }
 
       $url = $baseUrl . (strpos($baseUrl, '?') === false ? '?' : '&') . http_build_query($query);
-      $spawn = channel_bridge_http_fire_and_forget($url, [], $timeout);
+      $spawn = channel_bridge_http_fire_and_forget($url, [], $timeout, 250);
+      channel_bridge_jobs_audit('worker_spawn_attempt', (($spawn['ok'] ?? false) === true ? 'info' : 'warn'), [
+        'trace' => $trace,
+        'endpoint' => $baseUrl,
+        'url' => $url,
+        'ok' => (($spawn['ok'] ?? false) === true ? 1 : 0),
+        'error' => trim((string)($spawn['error'] ?? '')),
+        'errno' => (int)($spawn['errno'] ?? 0),
+        'error_text' => trim((string)($spawn['error_text'] ?? '')),
+        'bytes' => (int)($spawn['bytes'] ?? 0),
+        'response_line' => trim((string)($spawn['response_line'] ?? '')),
+        'response_preview' => trim((string)($spawn['response_preview'] ?? '')),
+      ]);
       if (($spawn['ok'] ?? false) === true) {
-        return $spawn + ['endpoint' => $baseUrl];
+        return $spawn + ['endpoint' => $baseUrl, 'trace' => $trace];
       }
       $last = $spawn + ['endpoint' => $baseUrl];
     }
 
-    return $last;
+    return $last + ['trace' => $trace];
   }
 
   /**

@@ -22,13 +22,15 @@ CREATE TABLE IF NOT EXISTS `promobot_bots` (
   `max_api_key` VARCHAR(255) NOT NULL DEFAULT '',
   `max_base_url` VARCHAR(255) NOT NULL DEFAULT 'https://platform-api.max.ru',
   `max_send_path` VARCHAR(255) NOT NULL DEFAULT '/messages',
+  `promo_source_bot_id` INT UNSIGNED NOT NULL DEFAULT 0,
   `created_by` INT NOT NULL DEFAULT 0,
   `updated_by` INT NOT NULL DEFAULT 0,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_platform` (`platform`),
-  KEY `idx_enabled` (`enabled`)
+  KEY `idx_enabled` (`enabled`),
+  KEY `idx_promo_source_bot_id` (`promo_source_bot_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS `promobot_channels` (

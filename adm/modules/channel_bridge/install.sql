@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS `channel_bridge_settings` (
   `max_api_key` VARCHAR(255) NOT NULL DEFAULT '',
   `max_base_url` VARCHAR(255) NOT NULL DEFAULT 'https://platform-api.max.ru',
   `max_send_path` VARCHAR(255) NOT NULL DEFAULT '/messages',
+  `webhook_probe_enabled` TINYINT(1) NOT NULL DEFAULT 1,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)
@@ -117,9 +118,9 @@ CREATE TABLE IF NOT EXISTS `channel_bridge_webhook_updates` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 INSERT INTO `channel_bridge_settings`
-(`id`, `enabled`, `tg_enabled`, `tg_bot_token`, `tg_webhook_secret`, `tg_parse_mode`, `vk_enabled`, `vk_group_token`, `vk_owner_id`, `vk_api_version`, `max_enabled`, `max_api_key`, `max_base_url`, `max_send_path`)
+(`id`, `enabled`, `tg_enabled`, `tg_bot_token`, `tg_webhook_secret`, `tg_parse_mode`, `vk_enabled`, `vk_group_token`, `vk_owner_id`, `vk_api_version`, `max_enabled`, `max_api_key`, `max_base_url`, `max_send_path`, `webhook_probe_enabled`)
 VALUES
-(1, 0, 1, '', '', 'HTML', 0, '', '', '5.199', 0, '', 'https://platform-api.max.ru', '/messages')
+(1, 0, 1, '', '', 'HTML', 0, '', '', '5.199', 0, '', 'https://platform-api.max.ru', '/messages', 1)
 ON DUPLICATE KEY UPDATE
   `id` = `id`;
 

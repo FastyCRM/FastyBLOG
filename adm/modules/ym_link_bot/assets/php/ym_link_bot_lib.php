@@ -3720,19 +3720,47 @@ if (!function_exists('ymlb_module_code')) {
     $url = trim($url);
     if ($url === '') return [null, null, null];
 
-    $opts = [
-      'http' => [
-        'method' => 'GET',
-        'timeout' => 20,
-        'header' => "User-Agent: Mozilla/5.0\r\nAccept: image/*,*/*;q=0.8\r\n",
-      ],
-      'ssl' => [
-        'verify_peer' => true,
-        'verify_peer_name' => true,
-      ],
-    ];
-    $context = stream_context_create($opts);
-    $bin = @file_get_contents($url, false, $context);
+    $bin = false;
+    if (function_exists('curl_init')) {
+      $ch = curl_init($url);
+      if ($ch) {
+        curl_setopt_array($ch, [
+          CURLOPT_RETURNTRANSFER => true,
+          CURLOPT_TIMEOUT => 20,
+          CURLOPT_CONNECTTIMEOUT => 5,
+          CURLOPT_FOLLOWLOCATION => true,
+          CURLOPT_MAXREDIRS => 5,
+          CURLOPT_SSL_VERIFYPEER => true,
+          CURLOPT_SSL_VERIFYHOST => 2,
+          CURLOPT_USERAGENT => 'Mozilla/5.0',
+          CURLOPT_HTTPHEADER => ['Accept: image/*,*/*;q=0.8'],
+        ]);
+        $curlBody = curl_exec($ch);
+        $curlCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($curlBody !== false && $curlBody !== '' && $curlCode >= 200 && $curlCode < 400) {
+          $bin = $curlBody;
+        }
+      }
+    }
+
+    if ($bin === false || $bin === '') {
+      $opts = [
+        'http' => [
+          'method' => 'GET',
+          'timeout' => 20,
+          'header' => "User-Agent: Mozilla/5.0\r\nAccept: image/*,*/*;q=0.8\r\n",
+        ],
+        'ssl' => [
+          'verify_peer' => true,
+          'verify_peer_name' => true,
+        ],
+      ];
+      $context = stream_context_create($opts);
+      $bin = @file_get_contents($url, false, $context);
+    }
+
     if ($bin === false || $bin === '') {
       return [null, null, null];
     }
@@ -5464,6 +5492,86 @@ if (!function_exists('ymlb_module_code')) {
   }
 
   /**
+   * ymlb_process_tg_channel_message()
+   * Handles Telegram channel posts with required user photo flow.
+   *
+   * @param array<string,mixed> $channelPost
+   * @param array<string,mixed> $settings
+   * @return array<string,mixed>
+   */
+  function ymlb_process_tg_channel_message(PDO $pdo, array $settings, array $channelPost): array
+  {
+    $chat = (array)($channelPost['chat'] ?? []);
+    $chatId = trim((string)($chat['id'] ?? ''));
+    $text = trim((string)($channelPost['text'] ?? ($channelPost['caption'] ?? '')));
+    $token = trim((string)($settings['bot_token'] ?? ''));
+    $platform = 'tg';
+    $chatKind = 'channel';
+
+    $startUrl = market_url_extract_first($text);
+    $startUrlIsMarket = ($startUrl !== null && ymlb_is_market_url($startUrl));
+    $photoFileId = ymlb_tg_message_best_photo_file_id($channelPost);
+
+    if ($chatId !== '' && $photoFileId !== '') {
+      $pending = ymlb_pending_photo_get($pdo, $platform, $chatKind, $chatId);
+      if (!$pending && !$startUrlIsMarket) {
+        if ($token !== '') {
+          ymlb_target_send_text($settings, $platform, $chatId, 'Сначала отправьте ссылку на товар.');
+        }
+        return ['handled' => true, 'reason' => 'photo_without_link'];
+      }
+
+      $fileRes = ymlb_tg_build_file_download_url($token, $photoFileId);
+      if (($fileRes['ok'] ?? false) !== true) {
+        ymlb_stage_log('pipeline_channel', 'warn', [
+          'stage' => 'await_photo',
+          'platform' => $platform,
+          'chat_id' => $chatId,
+          'reason' => (string)($fileRes['error'] ?? 'tg_file_download_url_failed'),
+        ]);
+        if ($token !== '') {
+          ymlb_target_send_text($settings, $platform, $chatId, 'Не удалось получить фото. Пришлите фото ещё раз.');
+        }
+        return ['handled' => true, 'reason' => 'photo_download_url_failed'];
+      }
+
+      if ($pending && !$startUrlIsMarket) {
+        $channelPost['text'] = trim((string)($pending['source_url'] ?? ''));
+        $channelPost['caption'] = (string)$channelPost['text'];
+      }
+      $channelPost['ymlb_user_photo_url'] = trim((string)($fileRes['url'] ?? ''));
+      $result = ymlb_process_channel_post($pdo, $settings, $channelPost, 'channel');
+      if (!empty($result['handled']) && $pending) {
+        ymlb_pending_photo_delete($pdo, $platform, $chatKind, $chatId);
+      }
+      return $result;
+    }
+
+    if ($chatId !== '' && $startUrlIsMarket) {
+      ymlb_pending_photo_upsert($pdo, $platform, $chatKind, $chatId, (string)$startUrl);
+      ymlb_stage_log('pipeline_channel', 'info', [
+        'stage' => 'await_photo',
+        'platform' => $platform,
+        'chat_id' => $chatId,
+        'source_url' => (string)$startUrl,
+      ]);
+      if ($token !== '') {
+        ymlb_target_send_text($settings, $platform, $chatId, 'Пришлите фото товара.');
+      }
+      return ['handled' => true, 'reason' => 'awaiting_photo'];
+    }
+
+    if ($chatId !== '' && ymlb_pending_photo_get($pdo, $platform, $chatKind, $chatId)) {
+      if ($token !== '') {
+        ymlb_target_send_text($settings, $platform, $chatId, 'Ожидаю фото товара.');
+      }
+      return ['handled' => true, 'reason' => 'awaiting_photo'];
+    }
+
+    return ymlb_process_channel_post($pdo, $settings, $channelPost, 'channel');
+  }
+
+  /**
    * ymlb_process_chat_message()
    * Handles group/supergroup messages for chat-mode link processing.
    *
@@ -6415,7 +6523,7 @@ if (!function_exists('ymlb_module_code')) {
         }
       } else {
         if (isset($update['channel_post']) && is_array($update['channel_post'])) {
-          $result = ymlb_process_channel_post($pdo, $settings, (array)$update['channel_post'], 'channel');
+          $result = ymlb_process_tg_channel_message($pdo, $settings, (array)$update['channel_post']);
         } elseif (isset($update['message']) && is_array($update['message'])) {
           $msg = (array)$update['message'];
           $chatType = strtolower(trim((string)(($msg['chat'] ?? [])['type'] ?? '')));

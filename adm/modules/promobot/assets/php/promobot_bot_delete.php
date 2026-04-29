@@ -45,6 +45,15 @@ $role = function_exists('auth_user_role') ? (string)auth_user_role() : '';
 try {
   $pdo->beginTransaction();
 
+  $stRefs = $pdo->prepare("SELECT COUNT(*) FROM " . PROMOBOT_TABLE_BOTS . " WHERE promo_source_bot_id = :bid");
+  $stRefs->execute([':bid' => $botId]);
+  $sharedRefs = (int)$stRefs->fetchColumn();
+
+  $pdo->prepare("\n    UPDATE " . PROMOBOT_TABLE_BOTS . "
+    SET promo_source_bot_id = 0
+    WHERE promo_source_bot_id = :bid
+  ")->execute([':bid' => $botId]);
+
   $pdo->prepare("DELETE FROM " . PROMOBOT_TABLE_PROMOS . " WHERE bot_id = :bid")->execute([':bid' => $botId]);
   $pdo->prepare("DELETE FROM " . PROMOBOT_TABLE_CHANNELS . " WHERE bot_id = :bid")->execute([':bid' => $botId]);
   $pdo->prepare("DELETE FROM " . PROMOBOT_TABLE_USER_ACCESS . " WHERE bot_id = :bid")->execute([':bid' => $botId]);
@@ -56,6 +65,7 @@ try {
 
   audit_log(PROMOBOT_MODULE_CODE, 'bot_delete', 'info', [
     'bot_id' => $botId,
+    'shared_refs_reset' => $sharedRefs,
   ], PROMOBOT_MODULE_CODE, null, $uid, $role);
 
   flash(promobot_t('promobot.flash_bot_deleted'), 'ok');
