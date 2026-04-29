@@ -481,8 +481,8 @@ if (!function_exists('channel_bridge_now')) {
 
   /**
    * channel_bridge_tg_text_links_html()
-   * Собирает HTML-текст с привязкой Telegram text_link к исходному тексту.
-   * Нужен для MAX: ссылка остаётся на тексте, но не распаковывается в голый URL.
+   * Собирает HTML-текст из Telegram entities (ссылки, жирный, курсив, цитаты и т.д.).
+   * Нужен для пересылки форматированного текста в MAX и другие цели.
    *
    * @param string $text
    * @param mixed $entities
@@ -495,77 +495,245 @@ if (!function_exists('channel_bridge_now')) {
       return htmlspecialchars($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
     }
 
-    $links = [];
-    foreach ($entities as $entity) {
-      if (!is_array($entity)) continue;
-      if (trim((string)($entity['type'] ?? '')) !== 'text_link') continue;
-
-      $offset = (int)($entity['offset'] ?? -1);
-      $length = (int)($entity['length'] ?? 0);
-      $url = trim((string)($entity['url'] ?? ''));
-      if ($offset < 0 || $length <= 0 || $url === '') continue;
-
-      $links[] = [
-        'offset' => $offset,
-        'length' => $length,
-        'url' => $url,
-      ];
-    }
-
-    if (!$links) {
-      return htmlspecialchars($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-    }
-
-    usort($links, static function (array $a, array $b): int {
-      return ((int)$a['offset'] <=> (int)$b['offset']);
-    });
-
     $chars = preg_split('//u', $text, -1, PREG_SPLIT_NO_EMPTY);
     if (!is_array($chars) || !$chars) {
       return htmlspecialchars($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
     }
 
     $charUnits = [];
+    $boundaries = [0];
+    $totalUnits = 0;
     foreach ($chars as $idx => $char) {
       $utf16 = mb_convert_encoding((string)$char, 'UTF-16BE', 'UTF-8');
       $units = (int)(strlen($utf16) / 2);
-      $charUnits[$idx] = ($units > 0) ? $units : 1;
+      $units = ($units > 0) ? $units : 1;
+      $charUnits[$idx] = $units;
+      $totalUnits += $units;
+      $boundaries[] = $totalUnits;
     }
 
-    $out = '';
-    $charIndex = 0;
-    $utf16Pos = 0;
-    $linkIndex = 0;
-    $linksCount = count($links);
+    $unitToCharIndex = static function (int $unitPos) use ($boundaries): int {
+      if ($unitPos <= 0) return 0;
+      $left = 0;
+      $right = count($boundaries) - 1;
+      while ($left < $right) {
+        $mid = (int)floor(($left + $right) / 2);
+        if ((int)$boundaries[$mid] < $unitPos) {
+          $left = $mid + 1;
+        } else {
+          $right = $mid;
+        }
+      }
+      return (int)$left;
+    };
 
-    while ($charIndex < count($chars)) {
-      while ($linkIndex < $linksCount && (int)$links[$linkIndex]['offset'] < $utf16Pos) {
-        $linkIndex++;
+    $allowed = [
+      'text_link' => true,
+      'text_mention' => true,
+      'bold' => true,
+      'italic' => true,
+      'underline' => true,
+      'strikethrough' => true,
+      'spoiler' => true,
+      'code' => true,
+      'pre' => true,
+      'blockquote' => true,
+      'expandable_blockquote' => true,
+    ];
+
+    $items = [];
+    foreach ($entities as $entity) {
+      if (!is_array($entity)) continue;
+      $type = trim((string)($entity['type'] ?? ''));
+      if ($type === '' || !isset($allowed[$type])) continue;
+
+      $offset = (int)($entity['offset'] ?? -1);
+      $length = (int)($entity['length'] ?? 0);
+      if ($offset < 0 || $length <= 0) continue;
+
+      $startUnits = $offset;
+      $endUnits = $offset + $length;
+      if ($startUnits >= $totalUnits) continue;
+      if ($endUnits <= 0) continue;
+      if ($endUnits > $totalUnits) $endUnits = $totalUnits;
+      if ($startUnits < 0) $startUnits = 0;
+      if ($endUnits <= $startUnits) continue;
+
+      $start = $unitToCharIndex($startUnits);
+      $end = $unitToCharIndex($endUnits);
+      if ($end <= $start) continue;
+
+      $item = [
+        'start' => $start,
+        'end' => $end,
+        'type' => $type,
+        'url' => '',
+        'language' => '',
+      ];
+      if ($type === 'text_link') {
+        $item['url'] = trim((string)($entity['url'] ?? ''));
+        if ($item['url'] === '') continue;
+      } elseif ($type === 'text_mention') {
+        $user = is_array($entity['user'] ?? null) ? (array)$entity['user'] : [];
+        $uid = trim((string)($user['id'] ?? ''));
+        if ($uid === '' || !preg_match('~^\d+$~', $uid)) continue;
+        $item['url'] = 'tg://user?id=' . $uid;
+      } elseif ($type === 'pre') {
+        $item['language'] = trim((string)($entity['language'] ?? ''));
       }
 
-      if ($linkIndex < $linksCount && (int)$links[$linkIndex]['offset'] === $utf16Pos) {
-        $targetEnd = (int)$links[$linkIndex]['offset'] + (int)$links[$linkIndex]['length'];
-        $label = '';
+      $items[] = $item;
+    }
 
-        while ($charIndex < count($chars) && $utf16Pos < $targetEnd) {
-          $label .= (string)$chars[$charIndex];
-          $utf16Pos += (int)($charUnits[$charIndex] ?? 1);
-          $charIndex++;
-        }
+    if (!$items) {
+      return htmlspecialchars($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    }
 
-        if ($label !== '') {
-          $out .= '<a href="' . htmlspecialchars((string)$links[$linkIndex]['url'], ENT_QUOTES | ENT_HTML5, 'UTF-8') . '">'
-            . htmlspecialchars($label, ENT_QUOTES | ENT_HTML5, 'UTF-8')
-            . '</a>';
-        }
+    usort($items, static function (array $a, array $b): int {
+      $cmp = ((int)$a['start'] <=> (int)$b['start']);
+      if ($cmp !== 0) return $cmp;
+      return ((int)$b['end'] <=> (int)$a['end']);
+    });
 
-        $linkIndex++;
+    $accepted = [];
+    $stack = [];
+    foreach ($items as $it) {
+      while ($stack && (int)$it['start'] >= (int)($stack[count($stack) - 1]['end'] ?? 0)) {
+        array_pop($stack);
+      }
+      if ($stack && (int)$it['end'] > (int)($stack[count($stack) - 1]['end'] ?? 0)) {
         continue;
       }
+      $accepted[] = $it;
+      $stack[] = $it;
+    }
 
-      $out .= htmlspecialchars((string)$chars[$charIndex], ENT_QUOTES | ENT_HTML5, 'UTF-8');
-      $utf16Pos += (int)($charUnits[$charIndex] ?? 1);
-      $charIndex++;
+    if (!$accepted) {
+      return htmlspecialchars($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    }
+
+    $open = [];
+    $close = [];
+    foreach ($accepted as $it) {
+      $s = (int)$it['start'];
+      $e = (int)$it['end'];
+      if (!isset($open[$s])) $open[$s] = [];
+      if (!isset($close[$e])) $close[$e] = [];
+      $open[$s][] = $it;
+      $close[$e][] = $it;
+    }
+
+    $openPriority = static function (array $it): array {
+      $type = (string)($it['type'] ?? '');
+      $prio = [
+        'pre' => 10,
+        'code' => 20,
+        'blockquote' => 30,
+        'expandable_blockquote' => 30,
+        'text_link' => 40,
+        'text_mention' => 40,
+        'bold' => 50,
+        'italic' => 60,
+        'underline' => 70,
+        'strikethrough' => 80,
+        'spoiler' => 90,
+      ];
+      return [-(int)($it['end'] ?? 0), (int)($prio[$type] ?? 999)];
+    };
+    $closePriority = static function (array $it): array {
+      $type = (string)($it['type'] ?? '');
+      $prio = [
+        'spoiler' => 10,
+        'strikethrough' => 20,
+        'underline' => 30,
+        'italic' => 40,
+        'bold' => 50,
+        'text_mention' => 60,
+        'text_link' => 60,
+        'blockquote' => 70,
+        'expandable_blockquote' => 70,
+        'code' => 80,
+        'pre' => 90,
+      ];
+      return [-(int)($it['start'] ?? 0), (int)($prio[$type] ?? 999)];
+    };
+    foreach ($open as &$list) {
+      usort($list, static function (array $a, array $b) use ($openPriority): int {
+        $pa = $openPriority($a);
+        $pb = $openPriority($b);
+        if ($pa[0] !== $pb[0]) return ((int)$pa[0] <=> (int)$pb[0]);
+        return ((int)$pa[1] <=> (int)$pb[1]);
+      });
+    }
+    unset($list);
+    foreach ($close as &$list) {
+      usort($list, static function (array $a, array $b) use ($closePriority): int {
+        $pa = $closePriority($a);
+        $pb = $closePriority($b);
+        if ($pa[0] !== $pb[0]) return ((int)$pa[0] <=> (int)$pb[0]);
+        return ((int)$pa[1] <=> (int)$pb[1]);
+      });
+    }
+    unset($list);
+
+    $openTag = static function (array $it): string {
+      $type = trim((string)($it['type'] ?? ''));
+      if ($type === 'text_link' || $type === 'text_mention') {
+        $url = trim((string)($it['url'] ?? ''));
+        if ($url === '') return '';
+        return '<a href="' . htmlspecialchars($url, ENT_QUOTES | ENT_HTML5, 'UTF-8') . '">';
+      }
+      if ($type === 'bold') return '<b>';
+      if ($type === 'italic') return '<i>';
+      if ($type === 'underline') return '<u>';
+      if ($type === 'strikethrough') return '<s>';
+      if ($type === 'spoiler') return '<tg-spoiler>';
+      if ($type === 'code') return '<code>';
+      if ($type === 'pre') {
+        $language = trim((string)($it['language'] ?? ''));
+        if ($language !== '') {
+          return '<pre><code class="language-' . htmlspecialchars($language, ENT_QUOTES | ENT_HTML5, 'UTF-8') . '">';
+        }
+        return '<pre>';
+      }
+      if ($type === 'blockquote' || $type === 'expandable_blockquote') return '<blockquote>';
+      return '';
+    };
+    $closeTag = static function (array $it): string {
+      $type = trim((string)($it['type'] ?? ''));
+      if ($type === 'text_link' || $type === 'text_mention') return '</a>';
+      if ($type === 'bold') return '</b>';
+      if ($type === 'italic') return '</i>';
+      if ($type === 'underline') return '</u>';
+      if ($type === 'strikethrough') return '</s>';
+      if ($type === 'spoiler') return '</tg-spoiler>';
+      if ($type === 'code') return '</code>';
+      if ($type === 'pre') {
+        $language = trim((string)($it['language'] ?? ''));
+        if ($language !== '') {
+          return '</code></pre>';
+        }
+        return '</pre>';
+      }
+      if ($type === 'blockquote' || $type === 'expandable_blockquote') return '</blockquote>';
+      return '';
+    };
+
+    $out = '';
+    $charCount = count($chars);
+    for ($i = 0; $i <= $charCount; $i++) {
+      if (isset($close[$i])) {
+        foreach ($close[$i] as $it) {
+          $out .= $closeTag($it);
+        }
+      }
+      if ($i === $charCount) break;
+      if (isset($open[$i])) {
+        foreach ($open[$i] as $it) {
+          $out .= $openTag($it);
+        }
+      }
+      $out .= htmlspecialchars((string)$chars[$i], ENT_QUOTES | ENT_HTML5, 'UTF-8');
     }
 
     return $out;
@@ -746,7 +914,86 @@ if (!function_exists('channel_bridge_now')) {
   {
     $text = str_replace('\\', '\\\\', $text);
     $text = str_replace(['[', ']'], ['\\[', '\\]'], $text);
+    $text = str_replace(['*', '_', '~', '|'], ['\\*', '\\_', '\\~', '\\|'], $text);
     return $text;
+  }
+
+  /**
+   * channel_bridge_max_markdown_link_url()
+   * Подготавливает URL для markdown-ссылки в MAX, чтобы не ломать синтаксис
+   * на скобках и пробелах.
+   *
+   * @param string $url
+   * @return string
+   */
+  function channel_bridge_max_markdown_link_url(string $url): string
+  {
+    $url = trim(html_entity_decode($url, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    if ($url === '') return '';
+
+    $url = str_replace(["\r", "\n", "\t"], '', $url);
+    $url = str_replace(' ', '%20', $url);
+    $url = str_replace(['<', '>'], ['%3C', '%3E'], $url);
+    $url = str_replace(['(', ')'], ['%28', '%29'], $url);
+
+    return $url;
+  }
+
+  /**
+   * channel_bridge_max_prepare_html()
+   * Готовит HTML-текст для MAX (стабильный путь для ссылок и базового оформления).
+   *
+   * @param string $html
+   * @return array{text:string,html:int}
+   */
+  function channel_bridge_max_prepare_html(string $html): array
+  {
+    $html = trim($html);
+    if ($html === '') {
+      return ['text' => '', 'html' => 0];
+    }
+
+    $html = html_entity_decode($html, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $html = preg_replace('~<br\s*/?>~iu', "\n", $html);
+    if (!is_string($html)) $html = '';
+
+    $html = preg_replace('~<tg-spoiler>~iu', '<ins>', $html);
+    if (!is_string($html)) $html = '';
+    $html = preg_replace('~</tg-spoiler>~iu', '</ins>', $html);
+    if (!is_string($html)) $html = '';
+
+    // Убираем языковые классы у code внутри pre.
+    $html = preg_replace('~<pre>\s*<code(?:\s+[^>]*)?>(.*?)</code>\s*</pre>~isu', '<pre>$1</pre>', $html);
+    if (!is_string($html)) $html = '';
+
+    $html = strip_tags($html, '<a><b><strong><i><em><del><s><ins><u><pre><code><blockquote>');
+    if (!is_string($html)) $html = '';
+
+    $html = preg_replace_callback('~<a\b([^>]*)>(.*?)</a>~isu', static function (array $m): string {
+      $attrs = (string)($m[1] ?? '');
+      $label = (string)($m[2] ?? '');
+      $href = '';
+      if (preg_match('~href\s*=\s*(["\'])(.*?)\1~isu', $attrs, $mm)) {
+        $href = trim(html_entity_decode((string)($mm[2] ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+      }
+      if ($href === '') {
+        return $label;
+      }
+      if (stripos($href, 'javascript:') === 0) {
+        return $label;
+      }
+      if (stripos($href, 'tg://') === 0) {
+        return $label;
+      }
+      $href = str_replace(["\r", "\n", "\t"], '', $href);
+      return '<a href="' . htmlspecialchars($href, ENT_QUOTES | ENT_HTML5, 'UTF-8') . '">' . $label . '</a>';
+    }, $html);
+    if (!is_string($html)) $html = '';
+
+    return [
+      'text' => channel_bridge_normalize_text($html),
+      'html' => ($html !== '') ? 1 : 0,
+    ];
   }
 
   /**
@@ -761,12 +1008,52 @@ if (!function_exists('channel_bridge_now')) {
    */
   function channel_bridge_max_prepare_text(string $text): array
   {
+    $containsBlockquote = (preg_match('~<blockquote\b~iu', $text) === 1);
     $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
     $text = preg_replace('~<br\s*/?>~iu', "\n", $text);
     if (!is_string($text)) $text = '';
 
     $markdown = 0;
-    $text = preg_replace_callback('~<a\s+[^>]*href\s*=\s*(["\'])(.*?)\1[^>]*>(.*?)</a>~isu', static function (array $m) use (&$markdown): string {
+    $placeholders = [];
+    $placeholderIdx = 0;
+    $stash = static function (string $value) use (&$placeholders, &$placeholderIdx): string {
+      $key = '@@CBMD_' . $placeholderIdx . '@@';
+      $placeholderIdx++;
+      $placeholders[$key] = $value;
+      return $key;
+    };
+
+    $text = preg_replace_callback('~<pre>\s*<code(?:\s+class=(["\'])language-([^"\']+)\1)?>(.*?)</code>\s*</pre>~isu', static function (array $m) use (&$markdown, $stash): string {
+      $markdown = 1;
+      $lang = trim((string)($m[2] ?? ''));
+      $code = html_entity_decode((string)($m[3] ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+      $code = trim($code, "\r\n");
+      $code = str_replace('```', '``\\`', $code);
+      $fence = '```' . ($lang !== '' ? $lang : '') . "\n" . $code . "\n```";
+      return $stash($fence);
+    }, $text);
+    if (!is_string($text)) $text = '';
+
+    $text = preg_replace_callback('~<pre[^>]*>(.*?)</pre>~isu', static function (array $m) use (&$markdown, $stash): string {
+      $markdown = 1;
+      $code = html_entity_decode(strip_tags((string)($m[1] ?? '')), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+      $code = trim($code, "\r\n");
+      $code = str_replace('```', '``\\`', $code);
+      return $stash("```\n" . $code . "\n```");
+    }, $text);
+    if (!is_string($text)) $text = '';
+
+    $text = preg_replace_callback('~<code[^>]*>(.*?)</code>~isu', static function (array $m) use (&$markdown, $stash): string {
+      $markdown = 1;
+      $code = html_entity_decode(strip_tags((string)($m[1] ?? '')), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+      $code = str_replace(["\r", "\n"], ' ', $code);
+      $code = trim($code);
+      $code = str_replace('`', '\\`', $code);
+      return $stash('`' . $code . '`');
+    }, $text);
+    if (!is_string($text)) $text = '';
+
+    $text = preg_replace_callback('~<a\s+[^>]*href\s*=\s*(["\'])(.*?)\1[^>]*>(.*?)</a>~isu', static function (array $m) use (&$markdown, $containsBlockquote): string {
       $url = trim((string)($m[2] ?? ''));
       $label = trim(strip_tags((string)($m[3] ?? '')));
       if ($url === '') return $label;
@@ -774,11 +1061,79 @@ if (!function_exists('channel_bridge_now')) {
       if (mb_strtolower($label, 'UTF-8') === mb_strtolower($url, 'UTF-8')) return $url;
 
       $markdown = 1;
-      return '[' . channel_bridge_max_markdown_escape($label) . '](' . $url . ')';
+      $mdUrl = channel_bridge_max_markdown_link_url($url);
+      if ($mdUrl === '') return $label;
+      if ($containsBlockquote) {
+        $safeLabel = channel_bridge_max_markdown_escape($label);
+        return $safeLabel . ' ' . $mdUrl . ' ';
+      }
+      return '[' . channel_bridge_max_markdown_escape($label) . '](' . $mdUrl . ')';
+    }, $text);
+    if (!is_string($text)) $text = '';
+
+    $text = preg_replace_callback('~<(?:tg-spoiler|span)\b([^>]*)>(.*?)</(?:tg-spoiler|span)>~isu', static function (array $m) use (&$markdown): string {
+      $attrs = trim((string)($m[1] ?? ''));
+      $inner = trim(strip_tags((string)($m[2] ?? '')));
+      if ($inner === '') return '';
+      if ($attrs !== '' && stripos($attrs, 'tg-spoiler') === false && stripos($attrs, 'class=') !== false) {
+        return $inner;
+      }
+      $markdown = 1;
+      return '||' . channel_bridge_max_markdown_escape($inner) . '||';
+    }, $text);
+    if (!is_string($text)) $text = '';
+
+    $text = preg_replace_callback('~<blockquote[^>]*>(.*?)</blockquote>~isu', static function (array $m) use (&$markdown): string {
+      $inner = trim(strip_tags((string)($m[1] ?? '')));
+      if ($inner === '') return '';
+      $markdown = 1;
+      $lines = preg_split('~\R~u', $inner);
+      if (!is_array($lines) || !$lines) return '> ' . $inner;
+      $out = [];
+      foreach ($lines as $line) {
+        $line = trim((string)$line);
+        $out[] = ($line === '') ? '>' : ('> ' . $line);
+      }
+      return implode("\n", $out);
+    }, $text);
+    if (!is_string($text)) $text = '';
+
+    $text = preg_replace_callback('~<(?:b|strong)>(.*?)</(?:b|strong)>~isu', static function (array $m) use (&$markdown): string {
+      $inner = trim(strip_tags((string)($m[1] ?? '')));
+      if ($inner === '') return '';
+      $markdown = 1;
+      return '**' . channel_bridge_max_markdown_escape($inner) . '**';
+    }, $text);
+    if (!is_string($text)) $text = '';
+
+    $text = preg_replace_callback('~<(?:i|em)>(.*?)</(?:i|em)>~isu', static function (array $m) use (&$markdown): string {
+      $inner = trim(strip_tags((string)($m[1] ?? '')));
+      if ($inner === '') return '';
+      $markdown = 1;
+      return '_' . channel_bridge_max_markdown_escape($inner) . '_';
+    }, $text);
+    if (!is_string($text)) $text = '';
+
+    $text = preg_replace_callback('~<(?:s|strike|del)>(.*?)</(?:s|strike|del)>~isu', static function (array $m) use (&$markdown): string {
+      $inner = trim(strip_tags((string)($m[1] ?? '')));
+      if ($inner === '') return '';
+      $markdown = 1;
+      return '~~' . channel_bridge_max_markdown_escape($inner) . '~~';
+    }, $text);
+    if (!is_string($text)) $text = '';
+
+    $text = preg_replace_callback('~<(?:u|ins)>(.*?)</(?:u|ins)>~isu', static function (array $m) use (&$markdown): string {
+      $inner = trim(strip_tags((string)($m[1] ?? '')));
+      if ($inner === '') return '';
+      $markdown = 1;
+      return '++' . channel_bridge_max_markdown_escape($inner) . '++';
     }, $text);
     if (!is_string($text)) $text = '';
 
     $text = strip_tags($text);
+    if ($placeholders) {
+      $text = strtr($text, $placeholders);
+    }
 
     return [
       'text' => channel_bridge_normalize_text($text),
@@ -6821,15 +7176,30 @@ if (!function_exists('channel_bridge_now')) {
     }
 
     $maxHtmlText = trim((string)($sourceMeta['max_text_html'] ?? ''));
-    $preparedText = channel_bridge_max_prepare_text(($maxHtmlText !== '') ? $maxHtmlText : $text);
-    $text = channel_bridge_normalize_text((string)($preparedText['text'] ?? ''));
-    $markdownNeeded = ((int)($preparedText['markdown'] ?? 0) === 1) ? 1 : 0;
+    $markdownNeeded = 0;
+    $forceHtmlFormat = 0;
+
+    if ($maxHtmlText !== '') {
+      $preparedHtml = channel_bridge_max_prepare_html($maxHtmlText);
+      $htmlText = channel_bridge_normalize_text((string)($preparedHtml['text'] ?? ''));
+      if ($htmlText !== '' && ((int)($preparedHtml['html'] ?? 0) === 1)) {
+        $text = $htmlText;
+        $forceHtmlFormat = 1;
+      }
+    }
+    if ($forceHtmlFormat !== 1) {
+      $preparedText = channel_bridge_max_prepare_text(($maxHtmlText !== '') ? $maxHtmlText : $text);
+      $text = channel_bridge_normalize_text((string)($preparedText['text'] ?? ''));
+      $markdownNeeded = ((int)($preparedText['markdown'] ?? 0) === 1) ? 1 : 0;
+    }
 
     $quoteApplied = 0;
-    $quoted = channel_bridge_max_apply_repost_quote($text);
-    if (is_array($quoted)) {
-      $text = channel_bridge_normalize_text((string)($quoted['text'] ?? $text));
-      $quoteApplied = ((int)($quoted['quoted'] ?? 0) === 1) ? 1 : 0;
+    if ($forceHtmlFormat !== 1) {
+      $quoted = channel_bridge_max_apply_repost_quote($text);
+      if (is_array($quoted)) {
+        $text = channel_bridge_normalize_text((string)($quoted['text'] ?? $text));
+        $quoteApplied = ((int)($quoted['quoted'] ?? 0) === 1) ? 1 : 0;
+      }
     }
 
     $payload = ['text' => $text];
@@ -6859,7 +7229,9 @@ if (!function_exists('channel_bridge_now')) {
       }
     }
 
-    if (($quoteApplied === 1 || $markdownNeeded === 1) && !isset($payload['format'])) {
+    if ($forceHtmlFormat === 1) {
+      $payload['format'] = 'html';
+    } elseif (($quoteApplied === 1 || $markdownNeeded === 1) && !isset($payload['format'])) {
       $payload['format'] = 'markdown';
     }
 
@@ -7418,25 +7790,6 @@ if (!function_exists('channel_bridge_now')) {
       $skipped = 0;
       $dispatchText = $messageText;
       $dispatchMaxHtml = trim((string)($payload['tg_text_html'] ?? ''));
-      $repostSourceUrl = '';
-      if ($sourcePlatform === CHANNEL_BRIDGE_SOURCE_TG) {
-        $repostSourceUrl = channel_bridge_tg_post_url_from_meta([
-          'source_chat_id' => $sourceChatId,
-          'source_message_id' => $sourceMessageId,
-          'tg_media_group_message_ids' => (array)($payload['tg_media_group_message_ids'] ?? []),
-          'tg_public_post_url' => (string)($payload['tg_public_post_url'] ?? ''),
-          'tg_chat_username' => (string)($payload['tg_chat_username'] ?? ''),
-        ]);
-      }
-      $linkRules = channel_bridge_link_suffix_rules_list($pdo, true);
-      if ($linkRules) {
-        $suffixApply = channel_bridge_apply_link_suffix_rules($dispatchText, $linkRules, $repostSourceUrl);
-        $dispatchText = channel_bridge_normalize_text((string)($suffixApply['text'] ?? $dispatchText));
-        if ($dispatchMaxHtml !== '') {
-          $suffixApplyHtml = channel_bridge_apply_link_suffix_rules($dispatchMaxHtml, $linkRules, $repostSourceUrl);
-          $dispatchMaxHtml = trim((string)($suffixApplyHtml['text'] ?? $dispatchMaxHtml));
-        }
-      }
 
       foreach ($routes as $route) {
         $routeId = (int)($route['id'] ?? 0);
