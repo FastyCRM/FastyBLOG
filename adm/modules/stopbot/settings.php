@@ -36,6 +36,12 @@ const STOPBOT_TABLE_BOTS = 'stopbot_bots';
 const STOPBOT_TABLE_CHANNELS = 'stopbot_channels';
 
 /**
+ * STOPBOT_TABLE_CHAT_ADMINS
+ * Локальный кеш администраторов MAX-чатов.
+ */
+const STOPBOT_TABLE_CHAT_ADMINS = 'stopbot_chat_admins';
+
+/**
  * STOPBOT_TABLE_PROMOS
  * Таблица промокодов/ответов.
  */
@@ -67,6 +73,7 @@ const STOPBOT_TABLES = [
   STOPBOT_TABLE_SETTINGS,
   STOPBOT_TABLE_BOTS,
   STOPBOT_TABLE_CHANNELS,
+  STOPBOT_TABLE_CHAT_ADMINS,
   STOPBOT_TABLE_PROMOS,
   STOPBOT_TABLE_USER_ACCESS,
   STOPBOT_TABLE_BIND_TOKENS,
@@ -81,6 +88,7 @@ const STOPBOT_REQUIRED_TABLES = [
   STOPBOT_TABLE_SETTINGS,
   STOPBOT_TABLE_BOTS,
   STOPBOT_TABLE_CHANNELS,
+  STOPBOT_TABLE_CHAT_ADMINS,
   STOPBOT_TABLE_PROMOS,
   STOPBOT_TABLE_USER_ACCESS,
   STOPBOT_TABLE_BIND_TOKENS,
@@ -108,6 +116,8 @@ const STOPBOT_ALLOWED_DO = [
   'bind_code_generate',
   'channel_probe',
   'channel_attach',
+  'channel_admins_refresh',
+  'channel_admin_delete',
   'channel_toggle',
   'channel_unbind',
 
@@ -117,6 +127,7 @@ const STOPBOT_ALLOWED_DO = [
   'promo_update',
   'promo_toggle',
   'promo_delete',
+  'rule_add',
   'rule_delete',
 
   'user_attach',

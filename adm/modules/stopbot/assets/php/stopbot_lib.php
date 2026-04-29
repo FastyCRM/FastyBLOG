@@ -611,22 +611,7 @@ if (!function_exists('stopbot_now')) {
   function stopbot_promos_list(PDO $pdo, int $botId): array
   {
     stopbot_require_schema($pdo);
-
-    if ($botId <= 0) return [];
-
-    $ownerBotId = stopbot_bot_promo_owner_id($pdo, $botId);
-    if ($ownerBotId <= 0) return [];
-
-    $st = $pdo->prepare("\n      SELECT *\n      FROM " . STOPBOT_TABLE_PROMOS . "\n      WHERE bot_id = :bid\n      ORDER BY id DESC\n    ");
-    $st->execute([':bid' => $ownerBotId]);
-    $rows = $st->fetchAll(PDO::FETCH_ASSOC);
-    if (is_array($rows) && !$rows) {
-      stopbot_promos_import_legacy_rules($pdo, $ownerBotId);
-      $st->execute([':bid' => $ownerBotId]);
-      $rows = $st->fetchAll(PDO::FETCH_ASSOC);
-    }
-
-    return is_array($rows) ? $rows : [];
+    return [];
   }
 
   /**
@@ -1047,8 +1032,6 @@ if (!function_exists('stopbot_now')) {
         continue;
       }
       $words[$value] = true;
-      $root = stopbot_auto_root($value);
-      if ($root !== '') $roots[$root] = true;
     }
     return [
       'words' => array_keys($words),
@@ -1070,14 +1053,13 @@ if (!function_exists('stopbot_now')) {
     if ($word === '') return '';
 
     $len = function_exists('mb_strlen') ? (int)mb_strlen($word, 'UTF-8') : strlen($word);
-    if ($len <= 2) return '';
-    if ($len <= 4) {
-      return function_exists('mb_substr') ? (string)mb_substr($word, 0, 2, 'UTF-8') : substr($word, 0, 2);
+    // Короткие авто-корни создают ложные срабатывания (например "се", "нах").
+    // Для авто-корней оставляем только достаточно длинные основы.
+    if ($len < 5) return '';
+    if ($len <= 7) {
+      return function_exists('mb_substr') ? (string)mb_substr($word, 0, 4, 'UTF-8') : substr($word, 0, 4);
     }
-    if ($len <= 6) {
-      return function_exists('mb_substr') ? (string)mb_substr($word, 0, 3, 'UTF-8') : substr($word, 0, 3);
-    }
-    return function_exists('mb_substr') ? (string)mb_substr($word, 0, 4, 'UTF-8') : substr($word, 0, 4);
+    return function_exists('mb_substr') ? (string)mb_substr($word, 0, 5, 'UTF-8') : substr($word, 0, 5);
   }
 
   /**
@@ -1099,15 +1081,36 @@ if (!function_exists('stopbot_now')) {
     foreach ((array)($rules['words'] ?? []) as $word) {
       $word = trim((string)$word);
       if ($word === '') continue;
-      // Совпадение по вхождению в строке (включая словосочетания).
-      if (strpos($normalized, $word) !== false) return $word;
+      $wordNorm = stopbot_normalize_text($word);
+      if ($wordNorm === '') continue;
+
+      // Фразы (2+ токена) проверяем по нормализованной строке.
+      $wordTokens = stopbot_tokenize_normalized($wordNorm);
+      if (count($wordTokens) >= 2) {
+        if (strpos(' ' . $normalized . ' ', ' ' . $wordNorm . ' ') !== false) return $word;
+        continue;
+      }
+
+      // Одиночное слово — только по полному совпадению токена.
+      foreach ($tokens as $token) {
+        if ($token !== '' && $token === $wordNorm) return $word;
+      }
     }
 
     foreach ((array)($rules['roots'] ?? []) as $root) {
       $root = trim((string)$root);
       if ($root === '') continue;
+      $rootNorm = stopbot_normalize_text($root);
+      if ($rootNorm === '') continue;
+
+      // Слишком короткие корни дают много ложных срабатываний.
+      $rootLen = function_exists('mb_strlen') ? (int)mb_strlen($rootNorm, 'UTF-8') : strlen($rootNorm);
+      if ($rootLen < 3) continue;
+
       foreach ($tokens as $token) {
-        if ($token !== '' && strpos($token, $root) !== false) return $root;
+        if ($token === '') continue;
+        // Матчим только по началу токена, а не по вхождению в середине слова.
+        if (strpos($token, $rootNorm) === 0) return $root;
       }
     }
 
@@ -1193,99 +1196,15 @@ if (!function_exists('stopbot_now')) {
   function stopbot_promo_find_match(PDO $pdo, int $botId, string $text, array $extraUrls = []): array
   {
     stopbot_require_schema($pdo);
-
-    if ($botId <= 0) return [];
-
-    $ownerBotId = stopbot_bot_promo_owner_id($pdo, $botId);
-    if ($ownerBotId <= 0) return [];
-    stopbot_promos_import_legacy_rules($pdo, $ownerBotId);
-
-    $text = trim($text);
-    if ($text === '' && !$extraUrls) return [];
-
-    $textNorm = stopbot_text_lower($text);
-    $textNormClean = stopbot_normalize_text($text);
-    $tokens = stopbot_tokenize_normalized($textNormClean);
-    if ($extraUrls) {
-      // extra urls are processed by external violation checker in webhook pipeline
-    }
-
-    $st = $pdo->prepare("\n      SELECT id, keywords, response_text\n      FROM " . STOPBOT_TABLE_PROMOS . "\n      WHERE bot_id = :bid AND is_active = 1\n      ORDER BY id ASC\n    ");
-    $st->execute([':bid' => $ownerBotId]);
-    $rows = $st->fetchAll(PDO::FETCH_ASSOC);
-    if (!is_array($rows)) return [];
-
-    foreach ($rows as $row) {
-      $keywords = (string)($row['keywords'] ?? '');
-      $list = stopbot_keywords_parse($keywords);
-      if (!$list) continue;
-
-      foreach ($list as $kw) {
-        $kwRaw = trim((string)$kw);
-        if ($kwRaw === '') continue;
-
-        if (stripos($kwRaw, 'word:') === 0) {
-          $needle = stopbot_normalize_text((string)substr($kwRaw, 5));
-          if ($needle === '' || !$tokens) continue;
-          foreach ($tokens as $token) {
-            if ($token === $needle) return $row;
-          }
-          continue;
-        }
-
-        if (stripos($kwRaw, 'flex:') === 0) {
-          $needle = stopbot_normalize_text((string)substr($kwRaw, 5));
-          if ($needle === '' || !$tokens) continue;
-          foreach ($tokens as $token) {
-            if ($token !== '' && strpos($token, $needle) !== false) return $row;
-          }
-          continue;
-        }
-
-        $domainRaw = $kwRaw;
-        $forceDomain = false;
-        if (stripos($domainRaw, 'domain:') === 0) {
-          $domainRaw = (string)substr($domainRaw, 7);
-          $forceDomain = true;
-        } elseif (stripos($domainRaw, 'site:') === 0) {
-          $domainRaw = (string)substr($domainRaw, 5);
-          $forceDomain = true;
-        } elseif (stripos($domainRaw, 'url:') === 0) {
-          $domainRaw = (string)substr($domainRaw, 4);
-          $forceDomain = true;
-        }
-        $domain = stopbot_domain_from_value($domainRaw);
-        $domainLooksLikeHost = (
-          strpos($domainRaw, ' ') === false
-          && (strpos($domainRaw, '.') !== false || strpos($domainRaw, '://') !== false || strpos($domainRaw, '/') !== false)
-        );
-        if ($domain !== '' && ($forceDomain || $domainLooksLikeHost)) {
-          // Доменные ключи в promo-правилах не применяем:
-          // домены обрабатываются только через allowlist в settings.
-          continue;
-        }
-
-        $kwNorm = stopbot_text_lower($kwRaw);
-        if ($kwNorm === '') continue;
-
-        if (function_exists('mb_strpos')) {
-          if (mb_strpos($textNorm, $kwNorm, 0, 'UTF-8') !== false) return $row;
-        } else {
-          if (strpos($textNorm, $kwNorm) !== false) return $row;
-        }
-
-        $kwNormClean = stopbot_normalize_text($kwRaw);
-        if ($kwNormClean !== '' && $textNormClean !== '' && strpos($textNormClean, $kwNormClean) !== false) return $row;
-      }
-    }
-
+    // Старый слой stopbot_promos больше не участвует в модерации.
+    // Рабочий источник правил: stopbot_settings (списки панели).
     return [];
   }
 
   /**
    * stopbot_rules_split()
    * Возвращает раздельные списки правил:
-   * слова/корни из promos + legacy words; домены — только allowlist из settings.
+   * слова/корни/домены — только из settings (списки панели).
    *
    * @param PDO $pdo
    * @param int $botId
@@ -1302,11 +1221,6 @@ if (!function_exists('stopbot_now')) {
     ];
 
     if ($botId <= 0) return $empty;
-    $ownerBotId = stopbot_bot_promo_owner_id($pdo, $botId);
-    if ($ownerBotId <= 0) return $empty;
-
-    stopbot_promos_import_legacy_rules($pdo, $ownerBotId);
-
     $words = [];
     $roots = [];
     $domains = [];
@@ -1331,52 +1245,6 @@ if (!function_exists('stopbot_now')) {
       $host = stopbot_domain_from_value((string)$line);
       if ($host === '') continue;
       $domains[stopbot_text_lower($host)] = $host;
-    }
-
-    $st = $pdo->prepare("\n      SELECT keywords\n      FROM " . STOPBOT_TABLE_PROMOS . "\n      WHERE bot_id = :bid\n      ORDER BY id ASC\n    ");
-    $st->execute([':bid' => $ownerBotId]);
-    $rows = $st->fetchAll(PDO::FETCH_ASSOC);
-    if (is_array($rows)) {
-      foreach ($rows as $row) {
-        $list = stopbot_keywords_parse((string)($row['keywords'] ?? ''));
-        foreach ($list as $kw) {
-          $kwRaw = trim((string)$kw);
-          if ($kwRaw === '') continue;
-
-          if (stripos($kwRaw, 'flex:') === 0) {
-            $value = trim((string)substr($kwRaw, 5));
-            if ($value !== '') $roots[stopbot_text_lower($value)] = $value;
-            continue;
-          }
-          if (stripos($kwRaw, 'word:') === 0) {
-            $value = trim((string)substr($kwRaw, 5));
-            if ($value !== '') $words[stopbot_text_lower($value)] = $value;
-            continue;
-          }
-
-          $domainRaw = $kwRaw;
-          $isDomainRule = false;
-          if (stripos($domainRaw, 'domain:') === 0) {
-            $domainRaw = (string)substr($domainRaw, 7);
-            $isDomainRule = true;
-          } elseif (stripos($domainRaw, 'site:') === 0) {
-            $domainRaw = (string)substr($domainRaw, 5);
-            $isDomainRule = true;
-          } elseif (stripos($domainRaw, 'url:') === 0) {
-            $domainRaw = (string)substr($domainRaw, 4);
-            $isDomainRule = true;
-          }
-
-          $domain = stopbot_domain_from_value($domainRaw);
-          $domainLooksLikeHost = (
-            strpos($domainRaw, ' ') === false
-            && (strpos($domainRaw, '.') !== false || strpos($domainRaw, '://') !== false || strpos($domainRaw, '/') !== false)
-          );
-          if ($domain !== '' && ($isDomainRule || $domainLooksLikeHost)) continue;
-
-          $words[stopbot_text_lower($kwRaw)] = $kwRaw;
-        }
-      }
     }
 
     natcasesort($words);
@@ -1570,6 +1438,113 @@ if (!function_exists('stopbot_now')) {
       'value' => $valueRaw,
     ];
   }
+
+  /**
+   * stopbot_rule_add()
+   * Добавляет запись в словари правил без дублей.
+   *
+   * @param PDO $pdo
+   * @param int $botId
+   * @param string $kind word|root|domain
+   * @param string $value
+   * @return array<string,mixed>
+   */
+  function stopbot_rule_add(PDO $pdo, int $botId, string $kind, string $value): array
+  {
+    stopbot_require_schema($pdo);
+
+    $kind = trim(stopbot_text_lower($kind));
+    $valueRaw = trim((string)$value);
+    if ($botId <= 0 || $valueRaw === '') {
+      return ['ok' => false, 'error' => 'INVALID_PARAMS'];
+    }
+    if (!in_array($kind, ['word', 'root', 'domain'], true)) {
+      return ['ok' => false, 'error' => 'INVALID_KIND'];
+    }
+
+    $ownerBotId = stopbot_bot_promo_owner_id($pdo, $botId);
+    if ($ownerBotId <= 0) {
+      return ['ok' => false, 'error' => 'PROMO_OWNER_NOT_FOUND'];
+    }
+
+    $settings = stopbot_settings_get($pdo);
+    $settingsWords = (string)($settings['stop_words_list'] ?? '');
+    $settingsDomains = (string)($settings['stop_domains_list'] ?? '');
+
+    $added = 0;
+    $savedValue = '';
+
+    if ($kind === 'domain') {
+      $host = stopbot_domain_from_value($valueRaw);
+      if ($host === '') {
+        return ['ok' => false, 'error' => 'INVALID_DOMAIN'];
+      }
+
+      $domains = stopbot_allowed_domains_parse($settingsDomains);
+      foreach ($domains as $existing) {
+        if (stopbot_domain_from_value((string)$existing) === $host) {
+          return ['ok' => true, 'added' => 0, 'kind' => $kind, 'value' => $host];
+        }
+      }
+      $domains[] = $host;
+      natcasesort($domains);
+      $settingsDomains = implode("\n", array_values(array_unique(array_map('trim', $domains))));
+      $savedValue = $host;
+      $added = 1;
+    } else {
+      $targetNorm = stopbot_normalize_text($valueRaw);
+      if ($targetNorm === '') {
+        return ['ok' => false, 'error' => 'INVALID_VALUE'];
+      }
+
+      $lines = stopbot_text_lines($settingsWords);
+      $exists = false;
+      foreach ($lines as $line) {
+        $lineRaw = trim((string)$line);
+        if ($lineRaw === '') continue;
+
+        $lineIsFlex = (stripos($lineRaw, 'flex:') === 0);
+        $lineVal = $lineIsFlex ? (string)substr($lineRaw, 5) : ((stripos($lineRaw, 'word:') === 0) ? (string)substr($lineRaw, 5) : $lineRaw);
+        $lineNorm = stopbot_normalize_text($lineVal);
+
+        if ($kind === 'root' && $lineIsFlex && $lineNorm === $targetNorm) {
+          $exists = true;
+          break;
+        }
+        if ($kind === 'word' && !$lineIsFlex && $lineNorm === $targetNorm) {
+          $exists = true;
+          break;
+        }
+      }
+
+      if (!$exists) {
+        if ($kind === 'root') {
+          $lines[] = 'flex:' . $targetNorm;
+          $savedValue = $targetNorm;
+        } else {
+          $lines[] = $valueRaw;
+          $savedValue = $valueRaw;
+        }
+        $settingsWords = implode("\n", array_values(array_filter(array_map('trim', $lines), static function ($v): bool {
+          return $v !== '';
+        })));
+        $added = 1;
+      } else {
+        $savedValue = $targetNorm;
+      }
+    }
+
+    if ($added === 1) {
+      stopbot_settings_save_rules($pdo, $settingsWords, $settingsDomains);
+    }
+
+    return [
+      'ok' => true,
+      'added' => $added,
+      'kind' => $kind,
+      'value' => $savedValue !== '' ? $savedValue : $valueRaw,
+    ];
+  }
   /**
    * stopbot_channel_get()
    * Возвращает канал/чат по bot_id + chat_id.
@@ -1616,6 +1591,215 @@ if (!function_exists('stopbot_now')) {
     $rows = $st->fetchAll(PDO::FETCH_ASSOC);
 
     return is_array($rows) ? $rows : [];
+  }
+
+  /**
+   * stopbot_chat_admins_grouped()
+   * Возвращает локальный список админов, сгруппированный по chat_id.
+   *
+   * @param PDO $pdo
+   * @param int $botId
+   * @return array<string,array<int,array<string,mixed>>>
+   */
+  function stopbot_chat_admins_grouped(PDO $pdo, int $botId): array
+  {
+    stopbot_require_schema($pdo);
+    if ($botId <= 0) return [];
+
+    $st = $pdo->prepare("\n      SELECT *\n      FROM " . STOPBOT_TABLE_CHAT_ADMINS . "\n      WHERE bot_id = :bid\n      ORDER BY chat_id ASC, display_name ASC, user_id ASC\n    ");
+    $st->execute([':bid' => $botId]);
+    $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+    if (!is_array($rows)) return [];
+
+    $out = [];
+    foreach ($rows as $row) {
+      $chatId = trim((string)($row['chat_id'] ?? ''));
+      if ($chatId === '') continue;
+      if (!isset($out[$chatId])) $out[$chatId] = [];
+      $out[$chatId][] = $row;
+    }
+    return $out;
+  }
+
+  /**
+   * stopbot_chat_admin_is_local()
+   * Проверяет отправителя по локальному списку админов.
+   *
+   * @param PDO $pdo
+   * @param int $botId
+   * @param string $platform
+   * @param string $chatId
+   * @param string $userId
+   * @return bool
+   */
+  function stopbot_chat_admin_is_local(PDO $pdo, int $botId, string $platform, string $chatId, string $userId): bool
+  {
+    stopbot_require_schema($pdo);
+
+    $chatId = trim($chatId);
+    $userId = trim($userId);
+    if ($botId <= 0 || $chatId === '' || $userId === '') return false;
+
+    $st = $pdo->prepare("\n      SELECT id\n      FROM " . STOPBOT_TABLE_CHAT_ADMINS . "\n      WHERE bot_id = :bid\n        AND platform = :platform\n        AND chat_id = :chat_id\n        AND user_id = :user_id\n      LIMIT 1\n    ");
+    $st->execute([
+      ':bid' => $botId,
+      ':platform' => $platform,
+      ':chat_id' => $chatId,
+      ':user_id' => $userId,
+    ]);
+
+    return (bool)$st->fetchColumn();
+  }
+
+  /**
+   * stopbot_max_pick_admins()
+   * Нормализует ответ MAX /chats/{chatId}/members/admins.
+   *
+   * @param array<string,mixed> $json
+   * @return array<int,array<string,string>>
+   */
+  function stopbot_max_pick_admins(array $json): array
+  {
+    $list = [];
+    if (isset($json['members']) && is_array($json['members'])) {
+      $list = (array)$json['members'];
+    } elseif (isset($json['result']['members']) && is_array($json['result']['members'])) {
+      $list = (array)$json['result']['members'];
+    } elseif (isset($json['admins']) && is_array($json['admins'])) {
+      $list = (array)$json['admins'];
+    } elseif (isset($json['result']) && is_array($json['result'])) {
+      $list = (array)$json['result'];
+    }
+
+    $admins = [];
+    foreach ($list as $item) {
+      if (!is_array($item)) continue;
+      $user = (array)($item['user'] ?? $item);
+      $userId = trim((string)($item['user_id'] ?? $user['user_id'] ?? $user['id'] ?? $item['id'] ?? ''));
+      if ($userId === '') continue;
+
+      $first = trim((string)($user['first_name'] ?? $item['first_name'] ?? ''));
+      $last = trim((string)($user['last_name'] ?? $item['last_name'] ?? ''));
+      $name = trim((string)($user['name'] ?? $item['name'] ?? trim($first . ' ' . $last)));
+      $username = trim((string)($user['username'] ?? $item['username'] ?? ''));
+
+      $admins[$userId] = [
+        'user_id' => $userId,
+        'username' => $username,
+        'display_name' => $name !== '' ? $name : $username,
+      ];
+    }
+
+    return array_values($admins);
+  }
+
+  /**
+   * stopbot_max_refresh_chat_admins()
+   * Загружает список админов MAX-чата и сохраняет локально.
+   *
+   * @param PDO $pdo
+   * @param int $botId
+   * @param string $chatId
+   * @return array<string,mixed>
+   */
+  function stopbot_max_refresh_chat_admins(PDO $pdo, int $botId, string $chatId): array
+  {
+    stopbot_require_schema($pdo);
+
+    $chatId = trim($chatId);
+    if ($botId <= 0 || $chatId === '') {
+      return ['ok' => false, 'error' => 'INVALID_PARAMS', 'count' => 0];
+    }
+
+    $bot = stopbot_bot_get($pdo, $botId);
+    if (!$bot || (string)($bot['platform'] ?? '') !== STOPBOT_PLATFORM_MAX) {
+      return ['ok' => false, 'error' => 'BOT_PLATFORM_MISMATCH', 'count' => 0];
+    }
+
+    $apiKey = stopbot_max_api_key_normalize((string)($bot['max_api_key'] ?? ''));
+    if ($apiKey === '') {
+      return ['ok' => false, 'error' => 'MAX_API_KEY_EMPTY', 'count' => 0];
+    }
+
+    $baseUrl = rtrim(trim((string)($bot['max_base_url'] ?? 'https://platform-api.max.ru')), '/');
+    if ($baseUrl === '') $baseUrl = 'https://platform-api.max.ru';
+    $url = $baseUrl . '/chats/' . rawurlencode($chatId) . '/members/admins';
+
+    $res = stopbot_max_http_json('GET', $url, [
+      'Authorization: ' . $apiKey,
+      'Accept: application/json',
+    ], null, 20);
+
+    $httpCode = (int)($res['http_code'] ?? 0);
+    if (($res['ok'] ?? false) !== true || $httpCode < 200 || $httpCode >= 300) {
+      return [
+        'ok' => false,
+        'error' => stopbot_max_extract_error($res),
+        'http_code' => $httpCode,
+        'count' => 0,
+      ];
+    }
+
+    $rawJson = (array)($res['json'] ?? []);
+    $admins = stopbot_max_pick_admins($rawJson);
+    $now = stopbot_now();
+
+    $pdo->beginTransaction();
+    try {
+      $pdo->prepare("\n        DELETE FROM " . STOPBOT_TABLE_CHAT_ADMINS . "\n        WHERE bot_id = :bid AND platform = :platform AND chat_id = :chat_id\n      ")->execute([
+        ':bid' => $botId,
+        ':platform' => STOPBOT_PLATFORM_MAX,
+        ':chat_id' => $chatId,
+      ]);
+
+      $ins = $pdo->prepare("\n        INSERT INTO " . STOPBOT_TABLE_CHAT_ADMINS . "\n          (bot_id, platform, chat_id, user_id, username, display_name, refreshed_at)\n        VALUES\n          (:bot_id, :platform, :chat_id, :user_id, :username, :display_name, :refreshed_at)\n      ");
+
+      foreach ($admins as $admin) {
+        $ins->execute([
+          ':bot_id' => $botId,
+          ':platform' => STOPBOT_PLATFORM_MAX,
+          ':chat_id' => $chatId,
+          ':user_id' => (string)($admin['user_id'] ?? ''),
+          ':username' => (string)($admin['username'] ?? ''),
+          ':display_name' => (string)($admin['display_name'] ?? ''),
+          ':refreshed_at' => $now,
+        ]);
+      }
+
+      $pdo->commit();
+    } catch (Throwable $e) {
+      if ($pdo->inTransaction()) $pdo->rollBack();
+      return ['ok' => false, 'error' => $e->getMessage(), 'count' => 0];
+    }
+
+    return [
+      'ok' => true,
+      'error' => '',
+      'http_code' => $httpCode,
+      'count' => count($admins),
+      'raw_keys' => array_keys($rawJson),
+      'result_keys' => (isset($rawJson['result']) && is_array($rawJson['result'])) ? array_keys((array)$rawJson['result']) : [],
+      'raw_preview' => stopbot_excerpt((string)($res['raw'] ?? ''), 500),
+    ];
+  }
+
+  /**
+   * stopbot_chat_admin_delete()
+   * Удаляет админа из локального списка.
+   *
+   * @param PDO $pdo
+   * @param int $botId
+   * @param int $adminId
+   * @return bool
+   */
+  function stopbot_chat_admin_delete(PDO $pdo, int $botId, int $adminId): bool
+  {
+    stopbot_require_schema($pdo);
+    if ($botId <= 0 || $adminId <= 0) return false;
+
+    $st = $pdo->prepare("\n      DELETE FROM " . STOPBOT_TABLE_CHAT_ADMINS . "\n      WHERE id = :id AND bot_id = :bid\n      LIMIT 1\n    ");
+    $st->execute([':id' => $adminId, ':bid' => $botId]);
+    return $st->rowCount() > 0;
   }
 
   /**
@@ -2192,13 +2376,69 @@ if (!function_exists('stopbot_now')) {
 
     $sender = (array)($message['sender'] ?? $message['author'] ?? []);
     $senderType = trim((string)($sender['type'] ?? $sender['kind'] ?? ''));
+    $senderRole = trim((string)($sender['role'] ?? $sender['status'] ?? ''));
+    $senderUser = (array)($sender['user'] ?? []);
+    $fromId = trim((string)(
+      $sender['id']
+      ?? $sender['user_id']
+      ?? $senderUser['id']
+      ?? $senderUser['user_id']
+      ?? $message['from_id']
+      ?? ''
+    ));
+    $fromUsername = trim((string)(
+      $sender['username']
+      ?? $senderUser['username']
+      ?? $sender['name']
+      ?? $senderUser['name']
+      ?? ''
+    ));
+    $senderIsAdmin = (
+      !empty($sender['is_admin'])
+      || !empty($sender['admin'])
+      || !empty($sender['is_moderator'])
+    );
+    $senderIsOwner = (
+      !empty($sender['is_owner'])
+      || !empty($sender['owner'])
+    );
 
     return [
       'chat_id' => $chatId,
       'text' => $text,
       'message_id' => $messageId,
       'sender_type' => $senderType,
+      'sender_role' => $senderRole,
+      'sender_is_admin' => $senderIsAdmin ? '1' : '',
+      'sender_is_owner' => $senderIsOwner ? '1' : '',
+      'from_id' => $fromId,
+      'from_username' => $fromUsername,
     ];
+  }
+
+  /**
+   * stopbot_max_is_admin_sender()
+   * Проверяет, что отправитель в MAX является админом/владельцем (best-effort).
+   *
+   * @param array<string,string> $meta
+   * @return bool
+   */
+  function stopbot_max_is_admin_sender(array $meta): bool
+  {
+    if (trim((string)($meta['sender_is_owner'] ?? '')) === '1') return true;
+    if (trim((string)($meta['sender_is_admin'] ?? '')) === '1') return true;
+
+    $type = strtolower(trim((string)($meta['sender_type'] ?? '')));
+    if (in_array($type, ['admin', 'administrator', 'owner', 'creator', 'moderator'], true)) {
+      return true;
+    }
+
+    $role = strtolower(trim((string)($meta['sender_role'] ?? '')));
+    if (in_array($role, ['admin', 'administrator', 'owner', 'creator', 'moderator'], true)) {
+      return true;
+    }
+
+    return false;
   }
 
   /**
@@ -3395,6 +3635,20 @@ if (!function_exists('stopbot_now')) {
       return ['ok' => true, 'http' => 200, 'handled' => false, 'reason' => 'bot_sender'];
     }
 
+    if (stopbot_max_is_admin_sender($meta)) {
+      $log([
+        'matched_promo_id' => 0,
+        'response_text' => '',
+        'send_status' => 'admin_skipped',
+        'error_text' => 'admin_skipped',
+      ]);
+      $audit('admin_skipped', [
+        'handled' => 0,
+        'send_status' => 'admin_skipped',
+      ]);
+      return ['ok' => true, 'http' => 200, 'handled' => false, 'reason' => 'admin_skipped'];
+    }
+
     $bindCode = stopbot_max_extract_bind_code($text);
     if ($bindCode !== '') {
       $bind = stopbot_bind_code_consume($pdo, STOPBOT_PLATFORM_MAX, $bindCode, $chatId);
@@ -3455,6 +3709,21 @@ if (!function_exists('stopbot_now')) {
         'send_status' => 'chat_not_bound',
       ], 'warn');
       return ['ok' => true, 'http' => 200, 'handled' => false, 'reason' => 'chat_not_bound'];
+    }
+
+    if (stopbot_chat_admin_is_local($pdo, $botId, STOPBOT_PLATFORM_MAX, $chatId, (string)($meta['from_id'] ?? ''))) {
+      $log([
+        'matched_promo_id' => 0,
+        'response_text' => '',
+        'send_status' => 'admin_skipped',
+        'error_text' => 'admin_skipped',
+      ]);
+      $audit('admin_skipped', [
+        'handled' => 0,
+        'send_status' => 'admin_skipped',
+        'admin_match' => 'local_list',
+      ]);
+      return ['ok' => true, 'http' => 200, 'handled' => false, 'reason' => 'admin_skipped'];
     }
 
     $match = stopbot_promo_find_match($pdo, $botId, $text);

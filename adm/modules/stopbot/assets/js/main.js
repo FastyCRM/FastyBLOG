@@ -291,6 +291,45 @@
   }
 
   /**
+   * stopbot_filter_rules()
+   * Локально фильтрует список правил (слова/корни/домены).
+   *
+   * @param {HTMLInputElement} $input
+   * @returns {void}
+   */
+  function stopbot_filter_rules($input) {
+    if (!$input) return;
+
+    var target = ($input.getAttribute('data-stopbot-rule-target') || '').trim();
+    if (!target) return;
+
+    var $table = $doc.querySelector('[data-stopbot-rule-table="' + target + '"]');
+    if (!$table) return;
+
+    var query = ($input.value || '').toLocaleLowerCase().trim();
+    var $rows = $table.querySelectorAll('[data-stopbot-rule-row="1"]');
+    var $empty = $table.querySelector('[data-stopbot-rule-empty="1"]');
+    var visible = 0;
+
+    $rows.forEach(function ($row) {
+      var haystack = ($row.getAttribute('data-stopbot-rule-search-text') || $row.textContent || '')
+        .toLocaleLowerCase()
+        .trim();
+      var match = (query === '' || haystack.indexOf(query) !== -1);
+      $row.style.display = match ? '' : 'none';
+      if (match) visible += 1;
+    });
+
+    if ($empty) {
+      var $emptyCell = $empty.querySelector('td');
+      if ($emptyCell && !$emptyCell.textContent) {
+        $emptyCell.textContent = $table.getAttribute('data-stopbot-rule-empty-text') || '';
+      }
+      $empty.style.display = visible === 0 ? '' : 'none';
+    }
+  }
+
+  /**
    * Делегирование клика по атрибуту data-stopbot-open-modal="1"
    */
   $doc.addEventListener('click', function (e) {
@@ -335,6 +374,10 @@
       stopbot_filter_logs(t);
       return;
     }
+    if (t.matches('[data-stopbot-rule-search="1"]')) {
+      stopbot_filter_rules(t);
+      return;
+    }
   });
 
   $doc.querySelectorAll('[data-stopbot-promo-search="1"]').forEach(function ($input) {
@@ -346,6 +389,12 @@
   $doc.querySelectorAll('[data-stopbot-log-search="1"]').forEach(function ($input) {
     if ($input instanceof HTMLInputElement) {
       stopbot_filter_logs($input);
+    }
+  });
+
+  $doc.querySelectorAll('[data-stopbot-rule-search="1"]').forEach(function ($input) {
+    if ($input instanceof HTMLInputElement) {
+      stopbot_filter_rules($input);
     }
   });
 })();

@@ -36,14 +36,35 @@ if ($channelId <= 0 || $botId <= 0) {
 
 $pdo = db();
 
+$st = $pdo->prepare("SELECT platform, chat_id FROM " . STOPBOT_TABLE_CHANNELS . " WHERE id = :id AND bot_id = :bid LIMIT 1");
+$st->execute([':id' => $channelId, ':bid' => $botId]);
+$channel = $st->fetch(PDO::FETCH_ASSOC);
+$platform = is_array($channel) ? (string)($channel['platform'] ?? '') : '';
+$chatId = is_array($channel) ? (string)($channel['chat_id'] ?? '') : '';
+$removedAdmins = 0;
+
 $pdo->prepare("DELETE FROM " . STOPBOT_TABLE_CHANNELS . " WHERE id = :id AND bot_id = :bid LIMIT 1")
   ->execute([':id' => $channelId, ':bid' => $botId]);
+
+if ($platform === STOPBOT_PLATFORM_MAX && $chatId !== '') {
+  $adminDelete = $pdo->prepare("
+    DELETE FROM " . STOPBOT_TABLE_CHAT_ADMINS . "
+    WHERE bot_id = :bid AND platform = :platform AND chat_id = :chat_id
+  ");
+  $adminDelete->execute([
+    ':bid' => $botId,
+    ':platform' => STOPBOT_PLATFORM_MAX,
+    ':chat_id' => $chatId,
+  ]);
+  $removedAdmins = $adminDelete->rowCount();
+}
 
 $uid = (int)(function_exists('auth_user_id') ? auth_user_id() : 0);
 $role = function_exists('auth_user_role') ? (string)auth_user_role() : '';
 
 audit_log(STOPBOT_MODULE_CODE, 'channel_unbind', 'info', [
   'channel_id' => $channelId,
+  'removed_admins' => $removedAdmins,
 ], STOPBOT_MODULE_CODE, null, $uid, $role);
 
 flash(stopbot_t('stopbot.flash_channel_unbound'), 'ok');

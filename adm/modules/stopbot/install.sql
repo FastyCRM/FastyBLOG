@@ -53,6 +53,23 @@ CREATE TABLE IF NOT EXISTS `stopbot_channels` (
   KEY `idx_platform` (`platform`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+CREATE TABLE IF NOT EXISTS `stopbot_chat_admins` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `bot_id` INT UNSIGNED NOT NULL,
+  `platform` ENUM('tg','max') NOT NULL,
+  `chat_id` VARCHAR(64) NOT NULL,
+  `user_id` VARCHAR(64) NOT NULL,
+  `username` VARCHAR(190) NOT NULL DEFAULT '',
+  `display_name` VARCHAR(190) NOT NULL DEFAULT '',
+  `refreshed_at` DATETIME NOT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_bot_chat_user` (`bot_id`, `platform`, `chat_id`, `user_id`),
+  KEY `idx_bot_chat` (`bot_id`, `platform`, `chat_id`),
+  KEY `idx_user_id` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
 CREATE TABLE IF NOT EXISTS `stopbot_promos` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `bot_id` INT UNSIGNED NOT NULL,
