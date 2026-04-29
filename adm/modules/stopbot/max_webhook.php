@@ -1,7 +1,7 @@
 <?php
 /**
- * FILE: /adm/modules/promobot/max_webhook.php
- * ROLE: Входящая webhook-точка MAX для promobot.
+ * FILE: /adm/modules/stopbot/max_webhook.php
+ * ROLE: Входящая webhook-точка MAX для stopbot.
  */
 
 declare(strict_types=1);
@@ -12,9 +12,9 @@ if (!defined('ROOT_PATH')) {
 
 require_once ROOT_PATH . '/core/bootstrap.php';
 require_once __DIR__ . '/settings.php';
-require_once __DIR__ . '/assets/php/promobot_lib.php';
+require_once __DIR__ . '/assets/php/stopbot_lib.php';
 
-if (!function_exists('module_is_enabled') || !module_is_enabled(PROMOBOT_MODULE_CODE)) {
+if (!function_exists('module_is_enabled') || !module_is_enabled(STOPBOT_MODULE_CODE)) {
   json_err('Module disabled', 404);
 }
 
@@ -26,40 +26,40 @@ if ($botId <= 0) {
 $raw = file_get_contents('php://input');
 $payload = json_decode((string)$raw, true);
 if (!is_array($payload)) $payload = [];
-$traceId = 'mxp_' . str_replace('.', '', uniqid('', true));
-$meta = function_exists('promobot_max_extract_message') ? promobot_max_extract_message($payload) : [];
+$traceId = 'mxs_' . str_replace('.', '', uniqid('', true));
+$meta = function_exists('stopbot_max_extract_message') ? stopbot_max_extract_message($payload) : [];
 
-audit_log(PROMOBOT_MODULE_CODE, 'max_webhook_dispatch', 'info', [
+audit_log(STOPBOT_MODULE_CODE, 'max_webhook_dispatch', 'info', [
   'trace_id' => $traceId,
   'phase' => 'received',
-  'handler_module' => PROMOBOT_MODULE_CODE,
-  'handler_script' => '/adm/modules/promobot/max_webhook.php',
+  'handler_module' => STOPBOT_MODULE_CODE,
+  'handler_script' => '/adm/modules/stopbot/max_webhook.php',
   'bot_id' => $botId,
   'chat_id' => (string)($meta['chat_id'] ?? ''),
   'message_id' => (string)($meta['message_id'] ?? ''),
-  'message_text' => promobot_excerpt((string)($meta['text'] ?? ''), 120),
+  'message_text' => stopbot_excerpt((string)($meta['text'] ?? ''), 120),
   'payload_size' => strlen((string)$raw),
 ]);
 
 try {
   $pdo = db();
-  $result = promobot_max_webhook_process($pdo, $botId, $payload, $traceId);
+  $result = stopbot_max_webhook_process($pdo, $botId, $payload, $traceId);
 
   $http = (int)($result['http'] ?? 200);
   if ($http < 100 || $http > 599) $http = 200;
 
   if (($result['ok'] ?? false) !== true && $http >= 400) {
-    audit_log(PROMOBOT_MODULE_CODE, 'max_webhook_dispatch', 'warn', [
+    audit_log(STOPBOT_MODULE_CODE, 'max_webhook_dispatch', 'warn', [
       'trace_id' => $traceId,
       'phase' => 'failed_response',
-      'handler_module' => PROMOBOT_MODULE_CODE,
-      'handler_script' => '/adm/modules/promobot/max_webhook.php',
+      'handler_module' => STOPBOT_MODULE_CODE,
+      'handler_script' => '/adm/modules/stopbot/max_webhook.php',
       'bot_id' => $botId,
       'http' => $http,
       'reason' => (string)($result['reason'] ?? ''),
       'handled' => !empty($result['handled']) ? 1 : 0,
     ]);
-    promobot_audit_log($pdo, 'max_webhook', 'warn', [
+    stopbot_audit_log($pdo, 'max_webhook', 'warn', [
       'bot_id' => $botId,
       'reason' => (string)($result['reason'] ?? ''),
       'message' => (string)($result['message'] ?? ''),
@@ -70,17 +70,17 @@ try {
     ]);
   }
 
-  promobot_audit_log($pdo, 'max_webhook', 'info', [
+  stopbot_audit_log($pdo, 'max_webhook', 'info', [
     'bot_id' => $botId,
     'reason' => (string)($result['reason'] ?? ''),
     'handled' => !empty($result['handled']) ? 1 : 0,
     'trace_id' => $traceId,
   ]);
-  audit_log(PROMOBOT_MODULE_CODE, 'max_webhook_dispatch', 'info', [
+  audit_log(STOPBOT_MODULE_CODE, 'max_webhook_dispatch', 'info', [
     'trace_id' => $traceId,
     'phase' => 'completed',
-    'handler_module' => PROMOBOT_MODULE_CODE,
-    'handler_script' => '/adm/modules/promobot/max_webhook.php',
+    'handler_module' => STOPBOT_MODULE_CODE,
+    'handler_script' => '/adm/modules/stopbot/max_webhook.php',
     'bot_id' => $botId,
     'http' => $http,
     'reason' => (string)($result['reason'] ?? ''),
@@ -89,16 +89,16 @@ try {
 
   json_ok($result);
 } catch (Throwable $e) {
-  audit_log(PROMOBOT_MODULE_CODE, 'max_webhook', 'error', [
+  audit_log(STOPBOT_MODULE_CODE, 'max_webhook', 'error', [
     'bot_id' => $botId,
     'error' => $e->getMessage(),
     'trace_id' => $traceId ?? '',
   ]);
-  audit_log(PROMOBOT_MODULE_CODE, 'max_webhook_dispatch', 'error', [
+  audit_log(STOPBOT_MODULE_CODE, 'max_webhook_dispatch', 'error', [
     'trace_id' => $traceId ?? '',
     'phase' => 'exception',
-    'handler_module' => PROMOBOT_MODULE_CODE,
-    'handler_script' => '/adm/modules/promobot/max_webhook.php',
+    'handler_module' => STOPBOT_MODULE_CODE,
+    'handler_script' => '/adm/modules/stopbot/max_webhook.php',
     'bot_id' => $botId,
     'error' => $e->getMessage(),
   ]);

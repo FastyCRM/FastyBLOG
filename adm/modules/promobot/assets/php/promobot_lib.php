@@ -2150,7 +2150,7 @@ if (!function_exists('promobot_now')) {
    * @param array<string,mixed> $payload
    * @return array<string,mixed>
    */
-  function promobot_max_webhook_process(PDO $pdo, int $botId, array $payload): array
+  function promobot_max_webhook_process(PDO $pdo, int $botId, array $payload, string $traceId = ''): array
   {
     promobot_require_schema($pdo);
 
@@ -2189,6 +2189,9 @@ if (!function_exists('promobot_now')) {
     $auditBase = [
       'bot_id' => $botId,
       'platform' => PROMOBOT_PLATFORM_MAX,
+      'handler_module' => PROMOBOT_MODULE_CODE,
+      'handler_script' => '/adm/modules/promobot/max_webhook.php',
+      'trace_id' => $traceId,
       'chat_id' => $chatId,
       'chat_type' => '',
       'chat_title' => '',
@@ -2199,6 +2202,7 @@ if (!function_exists('promobot_now')) {
     ];
     $audit = static function (string $reason, array $extra = [], string $level = 'info') use ($pdo, $auditBase): void {
       promobot_audit_log($pdo, 'max_webhook_trace', $level, array_merge($auditBase, [
+        'phase' => 'process',
         'reason' => $reason,
       ], $extra));
     };
